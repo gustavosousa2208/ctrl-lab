@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "Default capability for the main ctrl-lab window.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
+

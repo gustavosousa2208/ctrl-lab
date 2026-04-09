@@ -645,9 +645,11 @@ function ControlRoom() {
   const [endTime, setEndTime] = useState("10");
   const [stepSize, setStepSize] = useState("0.1");
   const [simulationStatus, setSimulationStatus] = useState("Idle");
+  const [activeMenu, setActiveMenu] = useState<"file" | null>(null);
   const [timeSeconds, setTimeSeconds] = useState(0);
   const nextNodeNumber = useRef(starterGraph.nodes.length + 1);
   const openFileInputRef = useRef<HTMLInputElement | null>(null);
+  const fileMenuRef = useRef<HTMLDivElement | null>(null);
   const dragDuplicateRef = useRef<{
     nodeId: string;
     duplicateId: string;
@@ -663,6 +665,36 @@ function ControlRoom() {
 
     return () => window.clearInterval(intervalId);
   }, []);
+
+  useEffect(() => {
+    if (!activeMenu) {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      if (
+        fileMenuRef.current &&
+        event.target instanceof Node &&
+        !fileMenuRef.current.contains(event.target)
+      ) {
+        setActiveMenu(null);
+      }
+    }
+
+    function handleWindowKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setActiveMenu(null);
+      }
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleWindowKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleWindowKeyDown);
+    };
+  }, [activeMenu]);
 
   const signalValues = evaluateSignalGraph(nodes as CanvasNode[], edges, timeSeconds);
   const renderedNodes = nodes.map((node) => {
@@ -905,6 +937,17 @@ function ControlRoom() {
     openFileInputRef.current?.click();
   }
 
+  function handleFileMenuAction(action: "save" | "open") {
+    setActiveMenu(null);
+
+    if (action === "save") {
+      handleSaveProject();
+      return;
+    }
+
+    handleOpenProject();
+  }
+
   async function handleOpenFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
 
@@ -1010,46 +1053,87 @@ function ControlRoom() {
   return (
     <main className="control-room">
       <section className="simulation-strip" aria-label="simulation controls">
-        <div className="simulation-strip__brand">
-          <span className="chrome-bar__badge">CTRL-LAB</span>
-          <strong>{workspaceTitle}</strong>
+        <div className="simulation-strip__menus">
+          <div className="simulation-strip__brand">
+            <span className="chrome-bar__badge">CTRL-LAB</span>
+            <strong>{workspaceTitle}</strong>
+          </div>
+
+          <nav className="simulation-strip__menu-bar" aria-label="application menu">
+            <div className="simulation-strip__menu" ref={fileMenuRef}>
+              <button
+                type="button"
+                className={`simulation-strip__menu-button${activeMenu === "file" ? " is-active" : ""}`}
+                aria-haspopup="menu"
+                aria-expanded={activeMenu === "file"}
+                onClick={() => setActiveMenu((currentMenu) => (currentMenu === "file" ? null : "file"))}
+              >
+                File
+              </button>
+
+              {activeMenu === "file" ? (
+                <div className="simulation-strip__menu-panel" role="menu" aria-label="file actions">
+                  <button
+                    type="button"
+                    className="simulation-strip__menu-item"
+                    role="menuitem"
+                    onClick={() => handleFileMenuAction("save")}
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    className="simulation-strip__menu-item"
+                    role="menuitem"
+                    onClick={() => handleFileMenuAction("open")}
+                  >
+                    Open
+                  </button>
+                </div>
+              ) : null}
+            </div>
+
+            <button type="button" className="simulation-strip__menu-button">
+              Edit
+            </button>
+            <button type="button" className="simulation-strip__menu-button">
+              View
+            </button>
+            <button type="button" className="simulation-strip__menu-button">
+              Setting
+            </button>
+          </nav>
         </div>
 
-        <button type="button" className="simulation-strip__button" onClick={handleStartSimulation}>
-          Start Simulation
-        </button>
+        <div className="simulation-strip__simulation-group">
+          <button type="button" className="simulation-strip__button" onClick={handleStartSimulation}>
+            Start Simulation
+          </button>
 
-        <button type="button" className="simulation-strip__button" onClick={handleSaveProject}>
-          Save
-        </button>
+          <label className="simulation-strip__field">
+            <span>End Time</span>
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.1"
+              min="0"
+              value={endTime}
+              onChange={(event) => setEndTime(event.target.value)}
+            />
+          </label>
 
-        <button type="button" className="simulation-strip__button" onClick={handleOpenProject}>
-          Open
-        </button>
-
-        <label className="simulation-strip__field">
-          <span>End Time</span>
-          <input
-            type="number"
-            inputMode="decimal"
-            step="0.1"
-            min="0"
-            value={endTime}
-            onChange={(event) => setEndTime(event.target.value)}
-          />
-        </label>
-
-        <label className="simulation-strip__field">
-          <span>Step Size</span>
-          <input
-            type="number"
-            inputMode="decimal"
-            step="0.01"
-            min="0"
-            value={stepSize}
-            onChange={(event) => setStepSize(event.target.value)}
-          />
-        </label>
+          <label className="simulation-strip__field">
+            <span>Step Size</span>
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min="0"
+              value={stepSize}
+              onChange={(event) => setStepSize(event.target.value)}
+            />
+          </label>
+        </div>
 
         <div className="simulation-strip__status">
           <span>Status</span>
