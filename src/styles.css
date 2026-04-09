@@ -1,0 +1,98 @@
+:root {
+  font-family: "IBM Plex Sans", "DejaVu Sans", sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #e7edf4;
+  background:
+    radial-gradient(circle at top, rgba(33, 110, 165, 0.35), transparent 34%),
+    linear-gradient(180deg, #111924 0%, #0a1018 100%);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  min-height: 100vh;
+}
+
+.app-shell {
+  display: grid;
+  gap: 1.5rem;
+  min-height: 100vh;
+  padding: 2rem;
+}
+
+.app-header {
+  display: grid;
+  gap: 0.75rem;
+  align-content: start;
+}
+
+.app-header h1,
+.workspace-card h2,
+.eyebrow,
+.header-copy,
+.workspace-card p,
+.workspace-card span {
+  margin: 0;
+}
+
+.eyebrow {
+  color: #8ec7ff;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.app-header h1 {
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  line-height: 1.05;
+}
+
+.header-copy {
+  max-width: 48rem;
+  color: #bfd0e1;
+  font-size: 1.05rem;
+}
+
+.workspace-card {
+  width: min(100%, 56rem);
+  padding: 1.5rem;
+  border: 1px solid rgba(148, 179, 208, 0.18);
+  border-radius: 1.25rem;
+  background: rgba(9, 16, 25, 0.72);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.3);
+}
+
+.workspace-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.workspace-card__header span {
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  background: rgba(142, 199, 255, 0.12);
+  color: #8ec7ff;
+  font-size: 0.9rem;
+}
+
+.workspace-card p {
+  color: #d0d9e2;
+}
