@@ -3,12 +3,10 @@ export type NodeId = string;
 
 export type BlockType =
   | "constant"
-  | "input"
-  | "output"
   | "sum"
-  | "gain"
-  | "unitDelay"
-  | "differenceEq";
+  | "display"
+  | "scope"
+  | "squareWave";
 
 export interface BlockNode<TParams = Record<string, unknown>> {
   id: NodeId;
