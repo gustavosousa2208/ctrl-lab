@@ -3,6 +3,11 @@
   "identifier": "main-capability",
   "description": "Default capability for the main ctrl-lab window.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file"
+  ]
 }
-

@@ -68,3 +68,8 @@ Then run the same repo from a Windows terminal and use:
 npm install
 npm run tauri dev
 ```
+
+# TODO for gusta
+- [ ] Migrate for bun
+- [ ] optimize and let it more simpler so thing dont keep growing and unmaintainably
+- [ ] make this a subproject of a larger project that includes the backend folder and the firmware folder

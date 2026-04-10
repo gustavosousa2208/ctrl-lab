@@ -1,8 +1,8 @@
-import type { CSSProperties, ChangeEvent, DragEvent } from "react";
-import { useEffect, useRef, useState } from "react";
+import { Component, createContext, type CSSProperties, type ReactNode } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   addEdge,
-  Controls,
   Handle,
   MarkerType,
   Position,
@@ -16,6 +16,8 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import "@xyflow/react/dist/style.css";
 import type { BlockGraph, BlockType } from "./types/graph";
 
@@ -41,6 +43,7 @@ type CanvasNodeData = BlockDefinition & {
   blockType: BlockType;
   detail: string;
   properties: Record<string, string>;
+  inputSignals: Record<string, number | null>;
   signalValue: number | null;
 };
 
@@ -67,27 +70,6 @@ type SerializedEdge = {
   targetPortId: string | null;
 };
 
-type SimulationDocument = {
-  version: 1;
-  generatedAt: string;
-  simulation: {
-    startTime: number;
-    endTime: number;
-    stepSize: number;
-  };
-  nodes: SerializedNode[];
-  edges: SerializedEdge[];
-  relationships: Array<{
-    from: {
-      nodeId: string;
-      portId: string | null;
-    };
-    to: {
-      nodeId: string;
-      portId: string | null;
-    };
-  }>;
-};
 
 type ProjectDocument = {
   version: 1;
@@ -97,9 +79,25 @@ type ProjectDocument = {
   simulation: {
     endTime: number;
     stepSize: number;
+    zoomStep?: number;
   };
   nodes: SerializedNode[];
   edges: SerializedEdge[];
+};
+
+type EditorSnapshot = {
+  nodes: SerializedNode[];
+  edges: SerializedEdge[];
+  endTime: string;
+  stepSize: string;
+  inspectorNodeId: string | null;
+  selectedNodeId: string | null;
+  selectedEdgeId: string | null;
+  nextNodeNumber: number;
+  projectFilePath: string | null;
+  isSimulationRunning: boolean;
+  timeSeconds: number;
+  zoomStep: number;
 };
 
 const gridSize = 24;
@@ -107,7 +105,7 @@ const gridSize = 24;
 const blockCatalog: Record<BlockType, BlockDefinition> = {
   constant: {
     label: "Constant",
-    role: "SRC-01",
+    role: "Constant",
     description: "Fixed source for setpoints and bias injection.",
     accent: "#6b8452",
     inputs: [],
@@ -119,7 +117,7 @@ const blockCatalog: Record<BlockType, BlockDefinition> = {
   },
   squareWave: {
     label: "Square Wave Generator",
-    role: "OSC-02",
+    role: "Square Wave",
     description: "Pulsed test source for switching logic and timing checks.",
     accent: "#9a7f35",
     inputs: [],
@@ -137,19 +135,19 @@ const blockCatalog: Record<BlockType, BlockDefinition> = {
   },
   sum: {
     label: "Summing Node",
-    role: "SUM-03",
+    role: "Sum",
     description: "Adds or subtracts incoming signals before routing forward.",
     accent: "#58706d",
     inputs: ["a", "b"],
     outputs: ["out"],
     propertyFields: [{ key: "equation", label: "Equation", inputMode: "text" }],
     defaultProperties: {
-      equation: "A + B",
+      equation: "+ +",
     },
   },
   scope: {
     label: "Scope",
-    role: "MON-04",
+    role: "Scope",
     description: "Visual sink for watching the live signal at this point.",
     accent: "#4f6686",
     inputs: ["in"],
@@ -165,7 +163,7 @@ const blockCatalog: Record<BlockType, BlockDefinition> = {
   },
   display: {
     label: "Display",
-    role: "DSP-05",
+    role: "Display",
     description: "Numeric readout for the current signal value at this point.",
     accent: "#7b5d4d",
     inputs: ["in"],
@@ -181,68 +179,31 @@ const blockCatalog: Record<BlockType, BlockDefinition> = {
   },
 };
 
-const starterGraph: BlockGraph = {
-  nodes: [
-    {
-      id: "constant-1",
-      type: "constant",
-      position: { x: 84, y: 122 },
-    },
-    {
-      id: "square-wave-1",
-      type: "squareWave",
-      position: { x: 84, y: 286 },
-    },
-    {
-      id: "sum-1",
-      type: "sum",
-      position: { x: 358, y: 198 },
-    },
-    {
-      id: "display-1",
-      type: "display",
-      position: { x: 670, y: 118 },
-    },
-    {
-      id: "scope-1",
-      type: "scope",
-      position: { x: 670, y: 272 },
-    },
-  ],
-  edges: [
-    {
-      id: "edge-1",
-      sourceNodeId: "constant-1",
-      sourcePortId: "out",
-      targetNodeId: "sum-1",
-      targetPortId: "a",
-    },
-    {
-      id: "edge-2",
-      sourceNodeId: "square-wave-1",
-      sourcePortId: "out",
-      targetNodeId: "sum-1",
-      targetPortId: "b",
-    },
-    {
-      id: "edge-3",
-      sourceNodeId: "sum-1",
-      sourcePortId: "out",
-      targetNodeId: "display-1",
-      targetPortId: "in",
-    },
-    {
-      id: "edge-4",
-      sourceNodeId: "sum-1",
-      sourcePortId: "out",
-      targetNodeId: "scope-1",
-      targetPortId: "in",
-    },
-  ],
+const emptyGraph: BlockGraph = {
+  nodes: [],
+  edges: [],
 };
 
 const starterBlocks: BlockType[] = ["constant", "squareWave", "sum", "display", "scope"];
-const workspaceTitle = "inserir texto";
+const workspaceTitle = "";
+const tagPrefixByType: Record<BlockType, string> = {
+  constant: "const",
+  squareWave: "wave",
+  sum: "sum",
+  scope: "scope",
+  display: "disp",
+};
+
+type RackDragState = {
+  blockType: BlockType;
+  x: number;
+  y: number;
+};
+
+type FlowSignalsContextValue = {
+  signalValues: Map<string, number | null>;
+  edges: CanvasEdge[];
+};
 
 const defaultMarker = {
   type: MarkerType.ArrowClosed,
@@ -250,6 +211,17 @@ const defaultMarker = {
   height: 18,
   color: "#344537",
 };
+
+const defaultViewport = { x: 0, y: 0, zoom: 1 };
+const defaultFitViewOptions = { padding: 0.16 };
+const defaultSnapGrid: [number, number] = [gridSize, gridSize];
+const defaultEdgeOptions = { type: "smoothstep", markerEnd: defaultMarker };
+const proOptions = { hideAttribution: true };
+const emptySignalContext: FlowSignalsContextValue = {
+  signalValues: new Map<string, number | null>(),
+  edges: [],
+};
+const FlowSignalsContext = createContext<FlowSignalsContextValue>(emptySignalContext);
 
 function parseNumber(value: string | undefined, fallback: number) {
   const parsed = Number.parseFloat(value ?? "");
@@ -267,17 +239,65 @@ function formatSignalValue(value: number | null, decimalsText = "2", unit = "") 
   return `${value.toFixed(decimals)}${suffix}`;
 }
 
-function evaluateEquation(equation: string, a: number, b: number) {
-  const normalized = equation.toUpperCase().replace(/\s+/g, "");
+function formatConstantValue(value: string | undefined) {
+  const normalized = (value ?? "").trim();
 
-  switch (normalized) {
-    case "A-B":
+  if (!normalized) {
+    return "-";
+  }
+
+  return normalized.length <= 6 ? normalized : "-";
+}
+
+const supportedEquationOperators = new Set(["+", "-", "*", "/"]);
+
+function normalizeEquation(equation: string | undefined) {
+  const tokens = (equation ?? "").match(/[+\-*/]/g) ?? [];
+  const first = supportedEquationOperators.has(tokens[0] ?? "") ? tokens[0] : "+";
+  const second = supportedEquationOperators.has(tokens[1] ?? "") ? tokens[1] : "+";
+
+  return `${first} ${second}`;
+}
+
+function parseEquationTokens(equation: string | undefined) {
+  const [leftOperator, rightOperator] = normalizeEquation(equation).split(" ");
+  return { leftOperator, rightOperator };
+}
+
+function divideSafely(dividend: number, divisor: number) {
+  if (divisor === 0) {
+    return 0;
+  }
+
+  return dividend / divisor;
+}
+
+function clampZoomLevel(zoom: number, zoomStep: number) {
+  if (!Number.isFinite(zoom)) {
+    return 1;
+  }
+
+  const safeStep = Number.isFinite(zoomStep) && zoomStep > 0 ? zoomStep : 0.05;
+  return Math.min(1.5, Math.max(0.55, Math.round(zoom / safeStep) * safeStep));
+}
+
+function evaluateEquation(equation: string, a: number, b: number) {
+  const { leftOperator, rightOperator } = parseEquationTokens(equation);
+  const combination = `${leftOperator} ${rightOperator}`;
+
+  switch (combination) {
+    case "+ +":
+      return a + b;
+    case "+ -":
       return a - b;
-    case "B-A":
+    case "- +":
       return b - a;
-    case "B+A":
-      return b + a;
-    case "A+B":
+    case "* *":
+      return a * b;
+    case "* /":
+      return divideSafely(a, b);
+    case "/ *":
+      return divideSafely(b, a);
     default:
       return a + b;
   }
@@ -294,7 +314,7 @@ function buildNodeDetail(
     case "squareWave":
       return `${properties.frequency} Hz / ${properties.duty}%`;
     case "sum":
-      return properties.equation;
+      return normalizeEquation(properties.equation);
     case "scope":
       return `${properties.channel} / ${properties.timebase}`;
     case "display":
@@ -304,11 +324,33 @@ function buildNodeDetail(
   }
 }
 
+function getNextRoleTag(nodes: Pick<CanvasNode, "data">[], blockType: BlockType) {
+  const prefix = tagPrefixByType[blockType];
+  const nextNumber =
+    nodes.reduce((maxNumber, node) => {
+      if (node.data.blockType !== blockType) {
+        return maxNumber;
+      }
+
+      const match = node.data.role.match(/-(\d+)$/);
+      const currentNumber = match ? Number.parseInt(match[1], 10) : 0;
+      return Math.max(maxNumber, currentNumber);
+    }, 0) + 1;
+
+  return `${prefix}-${String(nextNumber).padStart(2, "0")}`;
+}
+
 function isBlockType(value: unknown): value is BlockType {
   return typeof value === "string" && value in blockCatalog;
 }
 
-function toCanvasNode(id: string, blockType: BlockType, x: number, y: number): CanvasNode {
+function toCanvasNode(
+  id: string,
+  blockType: BlockType,
+  x: number,
+  y: number,
+  role = blockCatalog[blockType].role,
+): CanvasNode {
   const definition = blockCatalog[blockType];
   const properties = { ...definition.defaultProperties };
 
@@ -319,7 +361,9 @@ function toCanvasNode(id: string, blockType: BlockType, x: number, y: number): C
     data: {
       ...definition,
       blockType,
+      role,
       properties,
+      inputSignals: {},
       signalValue: null,
       detail: buildNodeDetail(blockType, properties),
     },
@@ -370,23 +414,9 @@ function fromSerializedNode(node: SerializedNode): CanvasNode {
       label: node.label,
       role: node.role,
       properties,
+      inputSignals: {},
       signalValue: null,
       detail: buildNodeDetail(node.type, properties),
-    },
-  };
-}
-
-function cloneCanvasNode(sourceNode: CanvasNode, id: string, x: number, y: number): CanvasNode {
-  return {
-    ...sourceNode,
-    id,
-    position: { x, y },
-    selected: false,
-    dragging: false,
-    data: {
-      ...sourceNode.data,
-      properties: { ...sourceNode.data.properties },
-      signalValue: null,
     },
   };
 }
@@ -415,8 +445,21 @@ function fromSerializedEdge(edge: SerializedEdge): CanvasEdge {
   };
 }
 
-function handleOffset(index: number, total: number) {
-  return `${((index + 1) / (total + 1)) * 100}%`;
+function handleOffset(index: number, total: number, nodeHeight: number) {
+  const handleSize = 12;
+  const centerOffset = handleSize / 2;
+
+  if (total <= 1) {
+    return `${nodeHeight / 2 - centerOffset}px`;
+  }
+
+  if (total === 2) {
+    const centers = [nodeHeight / 2 - gridSize, nodeHeight / 2 + gridSize];
+    return `${centers[index] - centerOffset}px`;
+  }
+
+  const startCenter = nodeHeight / 2 - ((total - 1) * gridSize) / 2;
+  return `${startCenter + index * gridSize - centerOffset}px`;
 }
 
 function getIncomingEdge(edges: CanvasEdge[], nodeId: string, handleId: string) {
@@ -514,38 +557,10 @@ function isProjectDocument(value: unknown): value is ProjectDocument {
     !!candidate.simulation &&
     typeof candidate.simulation.endTime === "number" &&
     typeof candidate.simulation.stepSize === "number" &&
+    (candidate.simulation.zoomStep === undefined || typeof candidate.simulation.zoomStep === "number") &&
     Array.isArray(candidate.nodes) &&
     Array.isArray(candidate.edges)
   );
-}
-
-function buildSimulationDocument(
-  nodes: CanvasNode[],
-  edges: CanvasEdge[],
-  endTime: number,
-  stepSize: number,
-): SimulationDocument {
-  return {
-    version: 1,
-    generatedAt: new Date().toISOString(),
-    simulation: {
-      startTime: 0,
-      endTime,
-      stepSize,
-    },
-    nodes: nodes.map(toSerializedNode),
-    edges: edges.map(toSerializedEdge),
-    relationships: edges.map((edge) => ({
-      from: {
-        nodeId: edge.source,
-        portId: edge.sourceHandle ?? null,
-      },
-      to: {
-        nodeId: edge.target,
-        portId: edge.targetHandle ?? null,
-      },
-    })),
-  };
 }
 
 function buildProjectDocument(
@@ -553,6 +568,7 @@ function buildProjectDocument(
   edges: CanvasEdge[],
   endTime: number,
   stepSize: number,
+  zoomStep: number,
 ): ProjectDocument {
   return {
     version: 1,
@@ -562,48 +578,76 @@ function buildProjectDocument(
     simulation: {
       endTime,
       stepSize,
+      zoomStep,
     },
     nodes: nodes.map(toSerializedNode),
     edges: edges.map(toSerializedEdge),
   };
 }
 
-function downloadJsonDocument(filename: string, document: ProjectDocument | SimulationDocument) {
-  const blob = new Blob([JSON.stringify(document, null, 2)], {
-    type: "application/json",
-  });
-  const url = URL.createObjectURL(blob);
-  const link = window.document.createElement("a");
-
-  link.href = url;
-  link.download = filename;
-  link.click();
-
-  URL.revokeObjectURL(url);
+function createCanvasState(graph: BlockGraph) {
+  return {
+    nodes: graph.nodes.map((node) => toCanvasNode(node.id, node.type, node.position.x, node.position.y)),
+    edges: graph.edges.map(toCanvasEdge),
+  };
 }
 
-function ControlBlockNode({ data, selected }: NodeProps<CanvasNode>) {
+function getNodeLiveData(
+  node: CanvasNode,
+  edges: CanvasEdge[],
+  signalValues: Map<string, number | null>,
+) {
+  const signalValue = signalValues.get(node.id) ?? null;
+  const inputSignals = Object.fromEntries(
+    node.data.inputs.map((inputId) => {
+      const incomingEdge = getIncomingEdge(edges, node.id, inputId);
+      const inputSignal = incomingEdge ? signalValues.get(incomingEdge.source) ?? null : null;
+      return [inputId, inputSignal];
+    }),
+  );
+
+  return {
+    inputSignals,
+    signalValue,
+    detail: buildNodeDetail(node.data.blockType, node.data.properties, signalValue),
+  };
+}
+
+function ControlBlockNode({ id, data, selected }: NodeProps<CanvasNode>) {
+  const { signalValues } = useContext(FlowSignalsContext);
+  const signalValue = signalValues.get(id) ?? null;
+  const detail = buildNodeDetail(data.blockType, data.properties, signalValue);
   const accentStyle = { "--node-accent": data.accent } as CSSProperties;
-  const displayReadout =
-    data.blockType === "display"
-      ? formatSignalValue(data.signalValue, data.properties.decimals, data.properties.unit)
-      : null;
+  const isSumNode = data.blockType === "sum";
+  const isConstantNode = data.blockType === "constant";
+  const isCompactNode = isConstantNode;
+  const nodeHeight = isSumNode || isConstantNode ? 96 : 192;
 
   return (
     <article
-      className={`flow-node flow-node--${data.blockType}${selected ? " is-selected" : ""}`}
+      className={`flow-node flow-node--${data.blockType}${isCompactNode ? " flow-node--compact" : ""}${selected ? " is-selected" : ""}`}
       style={accentStyle}
     >
-      {data.inputs.map((portId, index) => (
-        <Handle
-          key={`input-${portId}`}
-          id={portId}
-          type="target"
-          position={Position.Left}
-          className="flow-node__handle"
-          style={{ top: handleOffset(index, data.inputs.length) }}
-        />
-      ))}
+      {data.inputs.map((portId, index) => {
+        const handlePosition = isSumNode && portId === "b" ? Position.Bottom : Position.Left;
+        const handleStyle =
+          isSumNode && portId === "b"
+            ? { left: "42px" }
+            : isSumNode
+              ? { top: "42px" }
+              : { top: handleOffset(index, data.inputs.length, nodeHeight) };
+
+        return (
+          <Handle
+            key={`input-${portId}`}
+            id={portId}
+            type="target"
+            position={handlePosition}
+            className={`flow-node__handle${isCompactNode ? " flow-node__handle--compact" : ""}`}
+            style={handleStyle}
+          />
+        );
+      })}
 
       {data.outputs.map((portId, index) => (
         <Handle
@@ -611,22 +655,61 @@ function ControlBlockNode({ data, selected }: NodeProps<CanvasNode>) {
           id={portId}
           type="source"
           position={Position.Right}
-          className="flow-node__handle"
-          style={{ top: handleOffset(index, data.outputs.length) }}
+          className={`flow-node__handle${isCompactNode ? " flow-node__handle--compact" : ""}`}
+          style={isSumNode ? { top: "42px" } : { top: handleOffset(index, data.outputs.length, nodeHeight) }}
         />
       ))}
 
-      <div className="flow-node__head">
-        <span>{data.role}</span>
-        <strong>{data.blockType.toUpperCase()}</strong>
+      <BlockNodeBody data={data} signalValue={signalValue} detail={detail} />
+    </article>
+  );
+}
+
+function BlockNodeBody({
+  data,
+  signalValue = null,
+  detail,
+}: {
+  data: CanvasNodeData;
+  signalValue?: number | null;
+  detail?: string;
+}) {
+  const displayReadout =
+    data.blockType === "display"
+      ? formatSignalValue(signalValue, data.properties.decimals, data.properties.unit)
+      : null;
+  const isSumNode = data.blockType === "sum";
+  const isConstantNode = data.blockType === "constant";
+  const equationTokens = isSumNode ? parseEquationTokens(data.properties.equation) : null;
+
+  if (isSumNode) {
+    return (
+      <div className="flow-node__sum-layout">
+        <div className="flow-node__sum-slot flow-node__sum-slot--left">
+          <strong>{equationTokens?.leftOperator}</strong>
+        </div>
+        <div className="flow-node__sum-slot flow-node__sum-slot--bottom">
+          <strong>{equationTokens?.rightOperator}</strong>
+        </div>
+        <div className="flow-node__sum-slot flow-node__sum-slot--right">
+          <strong>=</strong>
+        </div>
       </div>
+    );
+  }
+
+  if (isConstantNode) {
+    return <div className="flow-node__constant-value">{formatConstantValue(data.properties.value)}</div>;
+  }
+
+  return (
+    <>
       <h3>{data.label}</h3>
-      <p>{data.description}</p>
       {displayReadout ? <div className="flow-node__display">{displayReadout}</div> : null}
       <div className="flow-node__meta">
-        <span>{data.detail}</span>
+        <span>{detail ?? data.detail}</span>
       </div>
-    </article>
+    </>
   );
 }
 
@@ -634,37 +717,106 @@ const nodeTypes = {
   controlBlock: ControlBlockNode,
 };
 
+function buildPreviewNodeData(blockType: BlockType): CanvasNodeData {
+  const definition = blockCatalog[blockType];
+  const properties = { ...definition.defaultProperties };
+
+  return {
+    ...definition,
+    blockType,
+    detail: buildNodeDetail(blockType, properties),
+    properties,
+    inputSignals: {},
+    signalValue: null,
+  };
+}
+
+type AppErrorBoundaryState = {
+  errorMessage: string | null;
+};
+
+class AppErrorBoundary extends Component<{ children: ReactNode }, AppErrorBoundaryState> {
+  state: AppErrorBoundaryState = {
+    errorMessage: null,
+  };
+
+  static getDerivedStateFromError(error: unknown): AppErrorBoundaryState {
+    const message = error instanceof Error ? error.stack ?? error.message : String(error);
+    return { errorMessage: message };
+  }
+
+  componentDidCatch(error: unknown) {
+    console.error("ctrl-lab runtime error", error);
+  }
+
+  render() {
+    if (this.state.errorMessage) {
+      return (
+        <main className="app-crash-screen">
+          <section className="app-crash-screen__panel">
+            <strong>Runtime Error</strong>
+            <pre>{this.state.errorMessage}</pre>
+          </section>
+        </main>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 function ControlRoom() {
-  const [nodes, setNodes, onNodesChange] = useNodesState(
-    starterGraph.nodes.map((node) => toCanvasNode(node.id, node.type, node.position.x, node.position.y)),
-  );
-  const [edges, setEdges, onEdgesChange] = useEdgesState(starterGraph.edges.map(toCanvasEdge));
+  const initialCanvas = createCanvasState(emptyGraph);
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialCanvas.nodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialCanvas.edges);
   const [inspectorNodeId, setInspectorNodeId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([]);
   const [endTime, setEndTime] = useState("10");
   const [stepSize, setStepSize] = useState("0.1");
   const [simulationStatus, setSimulationStatus] = useState("Idle");
+  const [projectFilePath, setProjectFilePath] = useState<string | null>(null);
   const [activeMenu, setActiveMenu] = useState<"file" | null>(null);
+  const [isSimulationRunning, setIsSimulationRunning] = useState(false);
   const [timeSeconds, setTimeSeconds] = useState(0);
-  const nextNodeNumber = useRef(starterGraph.nodes.length + 1);
-  const openFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [zoomLevel, setZoomLevel] = useState(1);
+  const [zoomStep, setZoomStep] = useState(0.05);
+  const [rackDrag, setRackDrag] = useState<RackDragState | null>(null);
+  const rackDragRef = useRef<RackDragState | null>(null);
+  const rackDragHandledRef = useRef(false);
+  const historyRef = useRef<EditorSnapshot[]>([]);
+  const isRestoringHistoryRef = useRef(false);
+  const simulationStartTimeRef = useRef<number | null>(null);
+  const nextNodeNumber = useRef(1);
   const fileMenuRef = useRef<HTMLDivElement | null>(null);
+  const canvasSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const createNodeRef = useRef<(blockType: BlockType, clientX: number, clientY: number) => void>(() => undefined);
   const dragDuplicateRef = useRef<{
     nodeId: string;
     duplicateId: string;
     startPosition: { x: number; y: number };
   } | null>(null);
-  const { screenToFlowPosition } = useReactFlow();
+  const { getViewport, screenToFlowPosition, setViewport } = useReactFlow();
 
   useEffect(() => {
-    const startedAt = Date.now();
+    if (!isSimulationRunning) {
+      simulationStartTimeRef.current = null;
+      return;
+    }
+
+    if (simulationStartTimeRef.current === null) {
+      simulationStartTimeRef.current = Date.now() - timeSeconds * 1000;
+    }
+
     const intervalId = window.setInterval(() => {
+      const startedAt = simulationStartTimeRef.current ?? Date.now();
       setTimeSeconds((Date.now() - startedAt) / 1000);
     }, 200);
 
     return () => window.clearInterval(intervalId);
-  }, []);
+  }, [isSimulationRunning]);
 
   useEffect(() => {
     if (!activeMenu) {
@@ -696,45 +848,207 @@ function ControlRoom() {
     };
   }, [activeMenu]);
 
-  const signalValues = evaluateSignalGraph(nodes as CanvasNode[], edges, timeSeconds);
-  const renderedNodes = nodes.map((node) => {
-    const signalValue = signalValues.get(node.id) ?? null;
-
+  const signalValues = useMemo(
+    () => evaluateSignalGraph(nodes as CanvasNode[], edges, timeSeconds),
+    [nodes, edges, timeSeconds],
+  );
+  const signalContextValue = useMemo(
+    () => ({ signalValues, edges }),
+    [signalValues, edges],
+  );
+  const inspectorNode = (nodes as CanvasNode[]).find((node) => node.id === inspectorNodeId) ?? null;
+  const inspectorLiveData = inspectorNode ? getNodeLiveData(inspectorNode, edges, signalValues) : null;
+  function createSnapshot(): EditorSnapshot {
     return {
-      ...node,
-      data: {
-        ...node.data,
-        signalValue,
-        detail: buildNodeDetail(node.data.blockType, node.data.properties, signalValue),
-      },
+      nodes: (nodes as CanvasNode[]).map(toSerializedNode),
+      edges: edges.map(toSerializedEdge),
+      endTime,
+      stepSize,
+      inspectorNodeId,
+      selectedNodeId,
+      selectedEdgeId,
+      nextNodeNumber: nextNodeNumber.current,
+      projectFilePath,
+      isSimulationRunning,
+      timeSeconds,
+      zoomStep,
     };
-  });
-  const inspectorNode = renderedNodes.find((node) => node.id === inspectorNodeId) ?? null;
+  }
+
+  function restoreSnapshot(snapshot: EditorSnapshot) {
+    isRestoringHistoryRef.current = true;
+    setNodes(snapshot.nodes.map((node) => fromSerializedNode(node)));
+    setEdges(snapshot.edges.map((edge) => fromSerializedEdge(edge)));
+    setEndTime(snapshot.endTime);
+    setStepSize(snapshot.stepSize);
+    setInspectorNodeId(snapshot.inspectorNodeId);
+    setSelectedNodeId(snapshot.selectedNodeId);
+    setSelectedEdgeId(snapshot.selectedEdgeId);
+    setSelectedNodeIds(snapshot.selectedNodeId ? [snapshot.selectedNodeId] : []);
+    setSelectedEdgeIds(snapshot.selectedEdgeId ? [snapshot.selectedEdgeId] : []);
+    nextNodeNumber.current = snapshot.nextNodeNumber;
+    setProjectFilePath(snapshot.projectFilePath);
+    setIsSimulationRunning(snapshot.isSimulationRunning);
+    setTimeSeconds(snapshot.timeSeconds);
+    setZoomStep(snapshot.zoomStep);
+    window.setTimeout(() => {
+      isRestoringHistoryRef.current = false;
+    }, 0);
+  }
+
+  function pushHistorySnapshot() {
+    if (isRestoringHistoryRef.current) {
+      return;
+    }
+
+    historyRef.current.push(createSnapshot());
+    if (historyRef.current.length > 100) {
+      historyRef.current.shift();
+    }
+  }
+
+  function undoLastChange() {
+    const snapshot = historyRef.current.pop();
+    if (!snapshot) {
+      return;
+    }
+
+    restoreSnapshot(snapshot);
+    setSimulationStatus("Undid last change");
+  }
+
+  function resetWorkspace(graph: BlockGraph = emptyGraph) {
+    const nextCanvas = createCanvasState(graph);
+
+    setNodes(nextCanvas.nodes);
+    setEdges(nextCanvas.edges);
+    setInspectorNodeId(null);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setSelectedNodeIds([]);
+    setSelectedEdgeIds([]);
+    dragDuplicateRef.current = null;
+    nextNodeNumber.current = getNextNodeNumber(nextCanvas.nodes.map(toSerializedNode));
+    setIsSimulationRunning(false);
+    setTimeSeconds(0);
+    setZoomStep(0.05);
+  }
+
+  function restoreProject(project: ProjectDocument) {
+    const restoredNodes = project.nodes
+      .filter((node) => isBlockType(node.type))
+      .map((node) => fromSerializedNode(node));
+    const restoredEdges = project.edges.map((edge) => fromSerializedEdge(edge));
+
+    setNodes(restoredNodes);
+    setEdges(restoredEdges);
+    setEndTime(String(project.simulation.endTime));
+    setStepSize(String(project.simulation.stepSize));
+    setInspectorNodeId(null);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setSelectedNodeIds([]);
+    setSelectedEdgeIds([]);
+    dragDuplicateRef.current = null;
+    nextNodeNumber.current = getNextNodeNumber(project.nodes);
+    setProjectFilePath(null);
+    setIsSimulationRunning(false);
+    setTimeSeconds(0);
+    setZoomStep(project.simulation.zoomStep ?? 0.05);
+  }
 
   function createNode(blockType: BlockType, clientX: number, clientY: number) {
+    pushHistorySnapshot();
     const position = screenToFlowPosition({ x: clientX, y: clientY });
     const x = Math.round((position.x - 92) / gridSize) * gridSize;
     const y = Math.round((position.y - 54) / gridSize) * gridSize;
     const id = `${blockType}-${nextNodeNumber.current}`;
+    const role = getNextRoleTag(nodes as CanvasNode[], blockType);
 
     nextNodeNumber.current += 1;
 
-    const nextNode = toCanvasNode(id, blockType, x, y);
+    const nextNode = toCanvasNode(id, blockType, x, y, role);
 
     setNodes((currentNodes) => currentNodes.concat(nextNode));
   }
+
+  createNodeRef.current = createNode;
+
+  useEffect(() => {
+    if (!rackDrag) {
+      return;
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+      const currentDrag = rackDragRef.current;
+      if (!currentDrag) {
+        return;
+      }
+      const nextDrag = { ...currentDrag, x: event.clientX, y: event.clientY };
+      rackDragRef.current = nextDrag;
+      setRackDrag(nextDrag);
+    }
+
+    function finishDrag(clientX: number, clientY: number) {
+      if (rackDragHandledRef.current) {
+        return;
+      }
+      rackDragHandledRef.current = true;
+
+      const currentDrag = rackDragRef.current;
+      rackDragRef.current = null;
+      setRackDrag(null);
+
+      if (!currentDrag) {
+        return;
+      }
+
+      const canvasBounds = canvasSurfaceRef.current?.getBoundingClientRect();
+      if (
+        canvasBounds &&
+        clientX >= canvasBounds.left &&
+        clientX <= canvasBounds.right &&
+        clientY >= canvasBounds.top &&
+        clientY <= canvasBounds.bottom
+      ) {
+        createNodeRef.current(currentDrag.blockType, clientX, clientY);
+      }
+    }
+
+    function handlePointerUp(event: PointerEvent) {
+      finishDrag(event.clientX, event.clientY);
+    }
+
+    function handlePointerCancel() {
+      rackDragHandledRef.current = true;
+      rackDragRef.current = null;
+      setRackDrag(null);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerCancel);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerCancel);
+    };
+  }, [rackDrag]);
 
   function updateInspectorNode(updater: (node: CanvasNode) => CanvasNode) {
     if (!inspectorNodeId) {
       return;
     }
 
+    pushHistorySnapshot();
     setNodes((currentNodes) =>
       currentNodes.map((node) => (node.id === inspectorNodeId ? updater(node as CanvasNode) : node)),
     );
   }
 
   function handleConnect(connection: Connection) {
+    pushHistorySnapshot();
     setEdges((currentEdges) =>
       addEdge(
         {
@@ -747,137 +1061,16 @@ function ControlRoom() {
     );
   }
 
-  function handleDragStart(event: DragEvent<HTMLButtonElement>, blockType: BlockType) {
-    event.dataTransfer.setData("application/ctrl-lab-block", blockType);
-    event.dataTransfer.effectAllowed = "move";
-  }
+  function handleRackPointerDown(event: React.PointerEvent<HTMLButtonElement>, blockType: BlockType) {
+    if (event.button !== 0) {
+      return;
+    }
 
-  function handleDragOver(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-  }
-
-  function handleDrop(event: DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-
-    const blockType = event.dataTransfer.getData("application/ctrl-lab-block") as BlockType;
-
-    if (!blockType || !(blockType in blockCatalog)) {
-      return;
-    }
-
-    createNode(blockType, event.clientX, event.clientY);
-  }
-
-  function handleNodeDragStart(event: { ctrlKey?: boolean; metaKey?: boolean }, node: Node) {
-    if (event.ctrlKey || event.metaKey) {
-      const duplicateId = `${node.data.blockType}-${nextNodeNumber.current}`;
-      nextNodeNumber.current += 1;
-
-      setNodes((currentNodes) => {
-        const sourceNode = currentNodes.find((currentNode) => currentNode.id === node.id) as CanvasNode | undefined;
-
-        if (!sourceNode) {
-          return currentNodes;
-        }
-
-        const duplicateNode = cloneCanvasNode(sourceNode, duplicateId, node.position.x, node.position.y);
-
-        return currentNodes.concat(duplicateNode);
-      });
-
-      dragDuplicateRef.current = {
-        nodeId: node.id,
-        duplicateId,
-        startPosition: { x: node.position.x, y: node.position.y },
-      };
-      setSelectedNodeId(duplicateId);
-      setSelectedEdgeId(null);
-      return;
-    }
-
-    dragDuplicateRef.current = null;
-  }
-
-  function handleNodeDrag(_: unknown, node: Node) {
-    const duplicateState = dragDuplicateRef.current;
-
-    if (!duplicateState || duplicateState.nodeId !== node.id) {
-      return;
-    }
-
-    setNodes((currentNodes) =>
-      currentNodes.map((currentNode) => {
-        if (currentNode.id === duplicateState.nodeId) {
-          return {
-            ...currentNode,
-            position: duplicateState.startPosition,
-          };
-        }
-
-        if (currentNode.id === duplicateState.duplicateId) {
-          return {
-            ...currentNode,
-            position: { x: node.position.x, y: node.position.y },
-          };
-        }
-
-        return currentNode;
-      }),
-    );
-  }
-
-  function handleNodeDragStop(_: unknown, node: Node) {
-    const duplicateState = dragDuplicateRef.current;
-    dragDuplicateRef.current = null;
-
-    if (!duplicateState || duplicateState.nodeId !== node.id) {
-      return;
-    }
-
-    const moved =
-      duplicateState.startPosition.x !== node.position.x || duplicateState.startPosition.y !== node.position.y;
-
-    if (!moved) {
-      setNodes((currentNodes) =>
-        currentNodes.filter((currentNode) => currentNode.id !== duplicateState.duplicateId),
-      );
-      setSelectedNodeId((currentId) => (currentId === duplicateState.duplicateId ? duplicateState.nodeId : currentId));
-      return;
-    }
-
-    setNodes((currentNodes) => {
-      return currentNodes.map((currentNode) => {
-        if (currentNode.id === duplicateState.nodeId) {
-          return {
-            ...currentNode,
-            position: duplicateState.startPosition,
-          };
-        }
-
-        if (currentNode.id === duplicateState.duplicateId) {
-          return {
-            ...currentNode,
-            position: { x: node.position.x, y: node.position.y },
-          };
-        }
-
-        return currentNode;
-      });
-    });
-
-    setSelectedNodeId(duplicateState.duplicateId);
-    setSelectedEdgeId(null);
-  }
-
-  function handleBaseFieldChange(field: "label" | "role", value: string) {
-    updateInspectorNode((node) => ({
-      ...node,
-      data: {
-        ...node.data,
-        [field]: value,
-      },
-    }));
+    rackDragHandledRef.current = false;
+    const nextDrag = { blockType, x: event.clientX, y: event.clientY };
+    rackDragRef.current = nextDrag;
+    setRackDrag(nextDrag);
   }
 
   function handlePropertyChange(key: string, value: string) {
@@ -897,6 +1090,15 @@ function ControlRoom() {
     });
   }
 
+  function handleNewProject() {
+    pushHistorySnapshot();
+    resetWorkspace();
+    setEndTime("10");
+    setStepSize("0.1");
+    setProjectFilePath(null);
+    setSimulationStatus("Started a new blank project");
+  }
+
   function handleStartSimulation() {
     const parsedEndTime = parseNumber(endTime, Number.NaN);
     const parsedStepSize = parseNumber(stepSize, Number.NaN);
@@ -911,90 +1113,142 @@ function ControlRoom() {
       return;
     }
 
-    const simulationDocument = buildSimulationDocument(nodes as CanvasNode[], edges, parsedEndTime, parsedStepSize);
-    downloadJsonDocument(
-      `ctrl-lab-simulation-${simulationDocument.generatedAt.replace(/[:.]/g, "-")}.json`,
-      simulationDocument,
-    );
-    setSimulationStatus(
-      `Exported ${simulationDocument.nodes.length} blocks and ${simulationDocument.edges.length} links`,
-    );
-  }
-
-  function handleSaveProject() {
-    const parsedEndTime = parseNumber(endTime, 10);
-    const parsedStepSize = parseNumber(stepSize, 0.1);
-    const projectDocument = buildProjectDocument(nodes as CanvasNode[], edges, parsedEndTime, parsedStepSize);
-
-    downloadJsonDocument(
-      `ctrl-lab-project-${projectDocument.generatedAt.replace(/[:.]/g, "-")}.json`,
-      projectDocument,
-    );
-    setSimulationStatus(`Saved project with ${projectDocument.nodes.length} blocks`);
-  }
-
-  function handleOpenProject() {
-    openFileInputRef.current?.click();
-  }
-
-  function handleFileMenuAction(action: "save" | "open") {
-    setActiveMenu(null);
-
-    if (action === "save") {
-      handleSaveProject();
+    if (isSimulationRunning) {
+      setIsSimulationRunning(false);
+      setSimulationStatus("Simulation stopped");
       return;
     }
 
-    handleOpenProject();
+    setTimeSeconds(0);
+    setIsSimulationRunning(true);
+    setSimulationStatus("Simulation running");
   }
 
-  async function handleOpenFileChange(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-
-    if (!file) {
-      return;
-    }
-
+  async function handleSaveProject(saveAs = false) {
     try {
-      const contents = await file.text();
+      const parsedEndTime = parseNumber(endTime, 10);
+      const parsedStepSize = parseNumber(stepSize, 0.1);
+      const projectDocument = buildProjectDocument(
+        nodes as CanvasNode[],
+        edges,
+        parsedEndTime,
+        parsedStepSize,
+        zoomStep,
+      );
+      const suggestedPath = projectFilePath ?? `ctrl-lab-project-${projectDocument.generatedAt.replace(/[:.]/g, "-")}.json`;
+      const targetPath = saveAs || !projectFilePath
+        ? await save({
+            title: "Save ctrl-lab project",
+            defaultPath: suggestedPath,
+            filters: [
+              {
+                name: "ctrl-lab project",
+                extensions: ["json"],
+              },
+            ],
+          })
+        : projectFilePath;
+
+      if (!targetPath) {
+        setSimulationStatus(saveAs || !projectFilePath ? "Save cancelled" : "Unable to save the project");
+        return;
+      }
+
+      await writeTextFile(targetPath, JSON.stringify(projectDocument, null, 2));
+      setProjectFilePath(targetPath);
+      setSimulationStatus(`Saved project to ${targetPath}`);
+    } catch {
+      setSimulationStatus("Unable to save the project");
+    }
+  }
+
+  async function handleOpenProject() {
+    try {
+      const selectedPath = await open({
+        title: "Open ctrl-lab project",
+        multiple: false,
+        directory: false,
+        filters: [
+          {
+            name: "ctrl-lab project",
+            extensions: ["json"],
+          },
+        ],
+      });
+
+      if (!selectedPath || Array.isArray(selectedPath)) {
+        setSimulationStatus("Open cancelled");
+        return;
+      }
+
+      const contents = await readTextFile(selectedPath);
       const parsed = JSON.parse(contents) as unknown;
 
       if (!isProjectDocument(parsed)) {
         throw new Error("invalid-project");
       }
 
-      const restoredNodes = parsed.nodes
-        .filter((node) => isBlockType(node.type))
-        .map((node) => fromSerializedNode(node));
-      const restoredEdges = parsed.edges.map((edge) => fromSerializedEdge(edge));
-
-      setNodes(restoredNodes);
-      setEdges(restoredEdges);
-      setEndTime(String(parsed.simulation.endTime));
-      setStepSize(String(parsed.simulation.stepSize));
-      setInspectorNodeId(null);
-      setSelectedNodeId(null);
-      setSelectedEdgeId(null);
-      nextNodeNumber.current = getNextNodeNumber(parsed.nodes);
-      setSimulationStatus(`Opened ${file.name}`);
+      pushHistorySnapshot();
+      restoreProject(parsed);
+      setProjectFilePath(selectedPath);
+      setSimulationStatus(`Opened ${selectedPath}`);
     } catch {
       setSimulationStatus("Unable to open that file");
-    } finally {
-      event.target.value = "";
     }
   }
 
+  function handleFileMenuAction(action: "new" | "open" | "save" | "saveAs") {
+    setActiveMenu(null);
+
+    if (action === "new") {
+      handleNewProject();
+      return;
+    }
+
+    if (action === "open") {
+      void handleOpenProject();
+      return;
+    }
+
+    if (action === "save") {
+      void handleSaveProject();
+      return;
+    }
+
+    void handleSaveProject(true);
+  }
+
   function deleteNodeById(nodeId: string) {
+    pushHistorySnapshot();
     setNodes((currentNodes) => currentNodes.filter((node) => node.id !== nodeId));
     setEdges((currentEdges) => currentEdges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId));
     setSelectedNodeId((currentId) => (currentId === nodeId ? null : currentId));
+    setSelectedNodeIds((currentIds) => currentIds.filter((currentId) => currentId !== nodeId));
     setSelectedEdgeId(null);
+    setSelectedEdgeIds([]);
     setInspectorNodeId((currentId) => (currentId === nodeId ? null : currentId));
   }
 
-  function deleteEdgeById(edgeId: string) {
-    setEdges((currentEdges) => currentEdges.filter((edge) => edge.id !== edgeId));
-    setSelectedEdgeId((currentId) => (currentId === edgeId ? null : currentId));
+  function deleteSelection(nodeIds: string[], edgeIds: string[]) {
+    if (nodeIds.length === 0 && edgeIds.length === 0) {
+      return;
+    }
+
+    pushHistorySnapshot();
+    const nodeIdSet = new Set(nodeIds);
+    const edgeIdSet = new Set(edgeIds);
+
+    setNodes((currentNodes) => currentNodes.filter((node) => !nodeIdSet.has(node.id)));
+    setEdges((currentEdges) =>
+      currentEdges.filter(
+        (edge) => !edgeIdSet.has(edge.id) && !nodeIdSet.has(edge.source) && !nodeIdSet.has(edge.target),
+      ),
+    );
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setSelectedNodeIds([]);
+    setSelectedEdgeIds([]);
+    setInspectorNodeId((currentId) => (currentId && nodeIdSet.has(currentId) ? null : currentId));
   }
 
   function handleDeleteInspectorNode() {
@@ -1007,10 +1261,6 @@ function ControlRoom() {
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Delete") {
-        return;
-      }
-
       const target = event.target;
 
       if (
@@ -1022,41 +1272,59 @@ function ControlRoom() {
         return;
       }
 
-      if (selectedNodeId) {
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "z") {
         event.preventDefault();
-        deleteNodeById(selectedNodeId);
+        undoLastChange();
         return;
       }
 
-      if (selectedEdgeId) {
+      if (event.key !== "Delete") {
+        return;
+      }
+
+      if (selectedNodeIds.length > 0 || selectedEdgeIds.length > 0) {
         event.preventDefault();
-        deleteEdgeById(selectedEdgeId);
+        deleteSelection(selectedNodeIds, selectedEdgeIds);
       }
     }
 
     window.addEventListener("keydown", handleKeyDown);
 
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedEdgeId, selectedNodeId]);
+  }, [selectedEdgeIds, selectedNodeIds]);
 
-  function handleSelectionChange({
-    nodes: selectedNodes,
-    edges: selectedEdges,
-  }: {
-    nodes: Node[];
-    edges: Edge[];
-  }) {
-    setSelectedNodeId(selectedNodes[0]?.id ?? null);
-    setSelectedEdgeId(selectedEdges[0]?.id ?? null);
+  function snapZoomLevel(zoom: number) {
+    return clampZoomLevel(zoom, zoomStep);
+  }
+
+  function handleZoomStep(direction: 1 | -1) {
+    const nextZoom = snapZoomLevel(zoomLevel + direction * zoomStep);
+    if (Math.abs(nextZoom - zoomLevel) <= 0.001) {
+      return;
+    }
+    const currentViewport = getViewport();
+    void setViewport({
+      x: currentViewport.x,
+      y: currentViewport.y,
+      zoom: nextZoom,
+    });
+    setZoomLevel(nextZoom);
+  }
+
+  function handleCanvasWheel(event: React.WheelEvent<HTMLDivElement>) {
+    event.preventDefault();
+
+    const direction: 1 | -1 = event.deltaY < 0 ? 1 : -1;
+    handleZoomStep(direction);
   }
 
   return (
     <main className="control-room">
       <section className="simulation-strip" aria-label="simulation controls">
-        <div className="simulation-strip__menus">
+        <div className="simulation-strip__section simulation-strip__section--editor">
           <div className="simulation-strip__brand">
             <span className="chrome-bar__badge">CTRL-LAB</span>
-            <strong>{workspaceTitle}</strong>
+            {workspaceTitle ? <strong>{workspaceTitle}</strong> : null}
           </div>
 
           <nav className="simulation-strip__menu-bar" aria-label="application menu">
@@ -1077,9 +1345,9 @@ function ControlRoom() {
                     type="button"
                     className="simulation-strip__menu-item"
                     role="menuitem"
-                    onClick={() => handleFileMenuAction("save")}
+                    onClick={() => handleFileMenuAction("new")}
                   >
-                    Save
+                    New
                   </button>
                   <button
                     type="button"
@@ -1088,6 +1356,22 @@ function ControlRoom() {
                     onClick={() => handleFileMenuAction("open")}
                   >
                     Open
+                  </button>
+                  <button
+                    type="button"
+                    className="simulation-strip__menu-item"
+                    role="menuitem"
+                    onClick={() => handleFileMenuAction("save")}
+                  >
+                    Save
+                  </button>
+                  <button
+                    type="button"
+                    className="simulation-strip__menu-item"
+                    role="menuitem"
+                    onClick={() => handleFileMenuAction("saveAs")}
+                  >
+                    Save As
                   </button>
                 </div>
               ) : null}
@@ -1105,9 +1389,10 @@ function ControlRoom() {
           </nav>
         </div>
 
-        <div className="simulation-strip__simulation-group">
+        <div className="simulation-strip__section simulation-strip__section--simulation">
+          <div className="simulation-strip__simulation-group">
           <button type="button" className="simulation-strip__button" onClick={handleStartSimulation}>
-            Start Simulation
+            {isSimulationRunning ? "Stop Simulation" : "Start Simulation"}
           </button>
 
           <label className="simulation-strip__field">
@@ -1133,20 +1418,8 @@ function ControlRoom() {
               onChange={(event) => setStepSize(event.target.value)}
             />
           </label>
+          </div>
         </div>
-
-        <div className="simulation-strip__status">
-          <span>Status</span>
-          <strong>{simulationStatus}</strong>
-        </div>
-
-        <input
-          ref={openFileInputRef}
-          type="file"
-          accept=".json,application/json"
-          className="simulation-strip__file-input"
-          onChange={handleOpenFileChange}
-        />
       </section>
 
       <section className="workspace-grid">
@@ -1161,11 +1434,9 @@ function ControlRoom() {
                 <button
                   key={blockType}
                   type="button"
-                  draggable
                   className={`library-card library-card--${blockType}`}
-                  onDragStart={(event) => handleDragStart(event, blockType)}
+                  onPointerDown={(event) => handleRackPointerDown(event, blockType)}
                 >
-                  <span>{block.role}</span>
                   <strong>{block.label}</strong>
                   <p>{detail}</p>
                 </button>
@@ -1176,41 +1447,45 @@ function ControlRoom() {
 
         <section className="canvas-frame" aria-label="block diagram canvas">
           <div className="canvas-frame__header">
-            <div>
-              <span className="panel__title">Process Canvas</span>
-              <p>Live editing surface for the current loop. Drag from the left rack to add more blocks.</p>
-            </div>
-            <div className="canvas-frame__tag">LINE A / BAY 03</div>
+            <span className="panel__title">Process Canvas</span>
           </div>
 
-          <div className="canvas-surface canvas-surface--flow" onDragOver={handleDragOver} onDrop={handleDrop}>
+          <div
+            ref={canvasSurfaceRef}
+            className="canvas-surface canvas-surface--flow"
+            onWheel={handleCanvasWheel}
+          >
+            <FlowSignalsContext.Provider value={signalContextValue}>
             <ReactFlow
-              nodes={renderedNodes}
+              nodes={nodes}
               edges={edges}
               nodeTypes={nodeTypes}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
               onConnect={handleConnect}
-              onNodeDragStart={handleNodeDragStart}
-              onNodeDrag={handleNodeDrag}
-              onNodeDragStop={handleNodeDragStop}
               onPaneClick={() => {
                 setSelectedNodeId(null);
                 setSelectedEdgeId(null);
+                setSelectedNodeIds([]);
+                setSelectedEdgeIds([]);
+                setInspectorNodeId(null);
               }}
-              onSelectionChange={handleSelectionChange}
-              onNodeDoubleClick={(_, node) => setInspectorNodeId(node.id)}
-              fitView
-              fitViewOptions={{ padding: 0.16 }}
+              onNodeClick={(_, node) => setInspectorNodeId(node.id)}
+              defaultViewport={defaultViewport}
+              fitView={false}
+              fitViewOptions={defaultFitViewOptions}
               snapToGrid
-              snapGrid={[gridSize, gridSize]}
+              snapGrid={defaultSnapGrid}
               minZoom={0.55}
               maxZoom={1.5}
-              defaultEdgeOptions={{ type: "smoothstep", markerEnd: defaultMarker }}
-              proOptions={{ hideAttribution: true }}
+              zoomOnScroll={false}
+              zoomOnPinch={false}
+              zoomOnDoubleClick={false}
+              defaultEdgeOptions={defaultEdgeOptions}
+              proOptions={proOptions}
             >
-              <Controls showInteractive={false} />
             </ReactFlow>
+            </FlowSignalsContext.Provider>
           </div>
         </section>
 
@@ -1246,7 +1521,7 @@ function ControlRoom() {
                 <input
                   type="text"
                   value={inspectorNode.data.label}
-                  onChange={(event) => handleBaseFieldChange("label", event.target.value)}
+                  readOnly
                 />
               </label>
 
@@ -1255,7 +1530,7 @@ function ControlRoom() {
                 <input
                   type="text"
                   value={inspectorNode.data.role}
-                  onChange={(event) => handleBaseFieldChange("role", event.target.value)}
+                  readOnly
                 />
               </label>
 
@@ -1276,7 +1551,7 @@ function ControlRoom() {
                 <span>Live Value</span>
                 <strong>
                   {formatSignalValue(
-                    inspectorNode.data.signalValue,
+                    inspectorLiveData?.signalValue ?? null,
                     inspectorNode.data.properties.decimals,
                     inspectorNode.data.properties.unit,
                   )}
@@ -1286,19 +1561,67 @@ function ControlRoom() {
           ) : (
             <div className="property-sheet property-sheet--empty">
               <strong>Inspector idle</strong>
-              <p>Double-click any block on the canvas to open its properties here.</p>
+              <p>Click any block on the canvas to open its properties here.</p>
             </div>
           )}
         </aside>
       </section>
+      <section className="workspace-footer" aria-label="workspace status">
+        <div className="workspace-footer__status">
+          <span>Status</span>
+          <strong>{simulationStatus}</strong>
+        </div>
+        <div className="workspace-footer__zoom">
+          <span>Zoom</span>
+          <strong>{Math.round(zoomLevel * 100)}%</strong>
+        </div>
+      </section>
+      {rackDrag
+        ? createPortal(
+            <article
+              className={`rack-drag-preview flow-node flow-node--${rackDrag.blockType}${rackDrag.blockType === "constant" ? " flow-node--compact" : ""}`}
+              style={{ left: rackDrag.x + 18, top: rackDrag.y + 18 }}
+            >
+              <BlockNodeBody data={buildPreviewNodeData(rackDrag.blockType)} />
+            </article>,
+            document.body,
+          )
+        : null}
     </main>
   );
 }
 
 export default function App() {
   return (
-    <ReactFlowProvider>
-      <ControlRoom />
-    </ReactFlowProvider>
+    <AppErrorBoundary>
+      <ReactFlowProvider>
+        <ControlRoom />
+      </ReactFlowProvider>
+    </AppErrorBoundary>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
