@@ -3,12 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.2.9",
   "description": "Open control systems lab for block-diagram design and simulation.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "bunx @tauri-apps/cli"
   },
   "dependencies": {
     "@tauri-apps/plugin-dialog": "^2.7.0",

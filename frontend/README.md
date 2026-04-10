@@ -8,17 +8,19 @@ Small open-source environment for drawing, simulating, and eventually deploying 
 - TypeScript
 - React
 - React Flow
+- Tauri v2
+- Bun
 
 ## Getting Started
 
 ```bash
-npm install
-npm run dev
+bun install
+bun run dev
 ```
 
 ## Tauri Desktop
 
-This repo is wired for Tauri v2 on top of the existing Vite app.
+This folder contains both the Vite frontend and the Tauri shell in [`src-tauri/`](./src-tauri).
 
 ### Linux or WSL2 prerequisites
 
@@ -43,18 +45,22 @@ Install Rust:
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Install a modern Node.js release compatible with Vite 7, for example Node 22 via your preferred version manager.
+Install Bun:
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
 
 Then install project dependencies and start the desktop shell:
 
 ```bash
-npm install
-npm run tauri dev
+bun install
+bun run tauri dev
 ```
 
 ### Important WSL2 note
 
-Running `npm run tauri dev` inside WSL2 launches the Linux desktop build.
+Running `bun run tauri dev` inside WSL2 launches the Linux desktop build.
 
 If you want a native Windows desktop app and Windows installers, install the Windows Tauri prerequisites as documented by Tauri:
 
@@ -65,11 +71,6 @@ If you want a native Windows desktop app and Windows installers, install the Win
 Then run the same repo from a Windows terminal and use:
 
 ```bash
-npm install
-npm run tauri dev
+bun install
+bun run tauri dev
 ```
-
-# TODO for gusta
-- [ ] Migrate for bun
-- [ ] optimize and let it more simpler so thing dont keep growing and unmaintainably
-- [ ] make this a subproject of a larger project that includes the backend folder and the firmware folder

@@ -1,5 +1,11 @@
 node_modules
+frontend/node_modules
 dist
+frontend/dist
 .DS_Store
 *.local
 .codex
+.tauri-dev.err
+.tauri-dev.log
+.vite-dev.err
+.vite-dev.log
