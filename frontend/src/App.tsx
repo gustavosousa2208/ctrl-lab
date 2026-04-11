@@ -959,7 +959,7 @@ function ControlRoom() {
     }
   });
   const [isHomeVisible, setIsHomeVisible] = useState(true);
-  const [activeMenu, setActiveMenu] = useState<"file" | null>(null);
+  const [activeMenu, setActiveMenu] = useState<"file" | "settings" | null>(null);
   const [isSimulationRunning, setIsSimulationRunning] = useState(false);
   const [timeSeconds, setTimeSeconds] = useState(0);
   const [zoomLevel, setZoomLevel] = useState(1);
@@ -1512,8 +1512,7 @@ function ControlRoom() {
     try {
       await openProjectAtPath(projectPath);
     } catch {
-      setRecentProjects((currentProjects) => currentProjects.filter((project) => project.path !== projectPath));
-      setSimulationStatus("Unable to open that recent project");
+      setSimulationStatus(`Unable to open recent project: ${projectPath}`);
     }
   }
 
@@ -1891,9 +1890,28 @@ function ControlRoom() {
             <button type="button" className="simulation-strip__menu-button">
               View
             </button>
-            <button type="button" className="simulation-strip__menu-button">
-              Setting
-            </button>
+            <div className="simulation-strip__menu">
+              <button
+                type="button"
+                className={`simulation-strip__menu-button${activeMenu === "settings" ? " is-active" : ""}`}
+                aria-haspopup="menu"
+                aria-expanded={activeMenu === "settings"}
+                onClick={() => setActiveMenu((currentMenu) => (currentMenu === "settings" ? null : "settings"))}
+              >
+                Settings
+              </button>
+
+              {activeMenu === "settings" ? (
+                <div className="simulation-strip__menu-panel" role="menu" aria-label="settings">
+                  <div className="simulation-strip__menu-label">Locale Settings</div>
+                  <div className="simulation-strip__menu-note" role="presentation">
+                    <strong>Decimal Separator</strong>
+                    <span>Prefer period `.` or comma `,`</span>
+                    <em>WIP</em>
+                  </div>
+                </div>
+              ) : null}
+            </div>
           </nav>
         </div>
 
