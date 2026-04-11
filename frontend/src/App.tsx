@@ -1,6 +1,7 @@
 import { Component, createContext, type CSSProperties, type ReactNode } from "react";
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { invoke } from "@tauri-apps/api/core";
 import {
   addEdge,
   applyNodeChanges,
@@ -1421,6 +1422,7 @@ function ControlRoom() {
 
   async function handleSaveProject(saveAs = false) {
     try {
+      const needsPathSelection = saveAs || !projectFilePath;
       const parsedEndTime = parseNumber(endTime, 10);
       const parsedStepSize = parseNumber(stepSize, 0.1);
       const viewport = viewportRef.current;
@@ -1433,7 +1435,7 @@ function ControlRoom() {
         viewport,
       );
       const suggestedPath = projectFilePath ?? formatDefaultProjectFilename();
-      const targetPath = saveAs || !projectFilePath
+      const targetPath = needsPathSelection
         ? await save({
             title: "Save ctrl-lab project",
             defaultPath: suggestedPath,
@@ -1455,6 +1457,9 @@ function ControlRoom() {
       setProjectFilePath(targetPath);
       rememberRecentProject(targetPath);
       setSimulationStatus(`Saved project to ${targetPath}`);
+      if (needsPathSelection) {
+        void invoke("reveal_in_explorer", { path: targetPath }).catch(() => undefined);
+      }
     } catch {
       setSimulationStatus("Unable to save the project");
     }
