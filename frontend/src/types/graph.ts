@@ -3,6 +3,7 @@ export type NodeId = string;
 
 export type BlockType =
   | "constant"
+  | "integrator"
   | "sum"
   | "display"
   | "scope"
