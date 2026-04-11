@@ -448,8 +448,11 @@ button {
 
 .simulation-strip__field input {
   min-width: 0;
+  display: block;
+  flex: 1 1 auto;
   width: 100%;
-  height: 0.8rem;
+  height: 0.86rem;
+  margin: 0;
   align-self: center;
   padding: 0 0.08rem;
   appearance: textfield;
@@ -458,6 +461,9 @@ button {
   background: transparent;
   color: #253024;
   text-align: left;
+  line-height: 0.86rem;
+  position: relative;
+  top: -1px;
   outline: none;
   box-shadow: none;
 }
@@ -863,6 +869,15 @@ button {
   background: transparent;
   border: 0;
   box-shadow: none;
+  cursor: crosshair;
+}
+
+.canvas-surface--flow .react-flow__node.dragging {
+  cursor: grabbing;
+}
+
+.canvas-surface--flow .react-flow__node .flow-node {
+  cursor: crosshair;
 }
 
 .canvas-surface--flow .react-flow__edge-path,
