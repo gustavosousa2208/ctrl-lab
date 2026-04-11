@@ -1,10 +1,11 @@
 import { Component, createContext, type CSSProperties, type ReactNode } from "react";
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { invoke } from "@tauri-apps/api/core";
 import {
   addEdge,
   applyNodeChanges,
+  BaseEdge,
+  getSmoothStepPath,
   Handle,
   MarkerType,
   Position,
@@ -15,6 +16,7 @@ import {
   useReactFlow,
   type Connection,
   type Edge,
+  type EdgeProps,
   type Node,
   type NodeChange,
   type NodeProps,
@@ -166,6 +168,26 @@ const blockCatalog: Record<BlockType, BlockDefinition> = {
       dataType: "f32",
     },
   },
+  transferFunction: {
+    label: "Transfer Function",
+    role: "Transfer Function",
+    description: "Linear dynamic block with numerator and denominator coefficients.",
+    accent: "#6d6a8a",
+    inputs: ["in"],
+    outputs: ["out"],
+    propertyFields: [
+      { key: "numerator", label: "Numerator Coefficients", inputMode: "text" },
+      { key: "denominator", label: "Denominator Coefficients", inputMode: "text" },
+      { key: "stateName", label: "State Name", inputMode: "text" },
+      { key: "dataType", label: "Data Type", inputMode: "select", options: [...dataTypeOptions] },
+    ],
+    defaultProperties: {
+      numerator: "1.0",
+      denominator: "1.0 1.0",
+      stateName: "x",
+      dataType: "f32",
+    },
+  },
   squareWave: {
     label: "Square Wave Generator",
     role: "Square Wave",
@@ -245,11 +267,12 @@ const emptyGraph: BlockGraph = {
   edges: [],
 };
 
-const starterBlocks: BlockType[] = ["constant", "integrator", "squareWave", "sum", "display", "scope"];
+const starterBlocks: BlockType[] = ["constant", "integrator", "transferFunction", "squareWave", "sum", "display", "scope"];
 const workspaceTitle = "";
 const tagPrefixByType: Record<BlockType, string> = {
   constant: "const",
   integrator: "int",
+  transferFunction: "tf",
   squareWave: "wave",
   sum: "sum",
   scope: "scope",
@@ -411,6 +434,8 @@ function buildNodeDetail(
       return `Value ${properties.value}`;
     case "integrator":
       return `Initial ${properties.initialValue}`;
+    case "transferFunction":
+      return properties.stateName?.trim() ? `State ${properties.stateName.trim()}` : "Transfer function";
     case "squareWave":
       return `${properties.frequency} Hz / ${properties.duty}%`;
     case "sum":
@@ -528,7 +553,7 @@ function toCanvasEdge(edge: BlockGraph["edges"][number]): CanvasEdge {
     sourceHandle: edge.sourcePortId,
     target: edge.targetNodeId,
     targetHandle: edge.targetPortId,
-    type: "smoothstep",
+    type: "controlEdge",
     markerEnd: defaultMarker,
   };
 }
@@ -540,7 +565,7 @@ function fromSerializedEdge(edge: SerializedEdge): CanvasEdge {
     sourceHandle: edge.sourcePortId ?? undefined,
     target: edge.targetNodeId,
     targetHandle: edge.targetPortId ?? undefined,
-    type: "smoothstep",
+    type: "controlEdge",
     markerEnd: defaultMarker,
   };
 }
@@ -633,6 +658,11 @@ function evaluateSignalGraph(nodes: CanvasNode[], edges: CanvasEdge[], timeSecon
         const initialValue = parseNumber(node.data.properties.initialValue, 0);
 
         result = initialValue + inputValue * timeSeconds;
+        break;
+      }
+      case "transferFunction": {
+        const inputEdge = getIncomingEdge(edges, nodeId, "in");
+        result = inputEdge ? readNode(inputEdge.source, nextStack) : null;
         break;
       }
       case "squareWave": {
@@ -770,14 +800,17 @@ function ControlBlockNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const isSumNode = data.blockType === "sum";
   const isConstantNode = data.blockType === "constant";
   const isIntegratorNode = data.blockType === "integrator";
+  const isTransferFunctionNode = data.blockType === "transferFunction";
   const isSquareWaveNode = data.blockType === "squareWave";
-  const isCompactNode = isConstantNode || isIntegratorNode;
-  const nodeHeight = isSumNode || isConstantNode || isIntegratorNode ? 96 : isSquareWaveNode ? 144 : 192;
+  const isCompactNode = isConstantNode || isIntegratorNode || isTransferFunctionNode;
+  const nodeHeight =
+    isSumNode || isConstantNode || isIntegratorNode || isTransferFunctionNode ? 96 : isSquareWaveNode ? 144 : 192;
 
   return (
     <article
       className={`flow-node flow-node--${data.blockType}${isCompactNode ? " flow-node--compact" : ""}${selected ? " is-selected" : ""}`}
       style={accentStyle}
+      data-state-name={isTransferFunctionNode ? (data.properties.stateName ?? "").trim() : undefined}
     >
       {data.inputs.map((portId, index) => {
         const handlePosition = isSumNode && portId === "b" ? Position.Bottom : Position.Left;
@@ -832,6 +865,7 @@ function BlockNodeBody({
   const isSumNode = data.blockType === "sum";
   const isConstantNode = data.blockType === "constant";
   const isIntegratorNode = data.blockType === "integrator";
+  const isTransferFunctionNode = data.blockType === "transferFunction";
   const equationTokens = isSumNode ? parseEquationTokens(data.properties.equation) : null;
 
   if (isSumNode) {
@@ -858,6 +892,10 @@ function BlockNodeBody({
     return <div className="flow-node__integrator-value">INT</div>;
   }
 
+  if (isTransferFunctionNode) {
+    return <div className="flow-node__transfer-function-value">TF</div>;
+  }
+
   return (
     <>
       <h3>{data.label}</h3>
@@ -869,8 +907,37 @@ function BlockNodeBody({
   );
 }
 
+function ControlEdge({
+  id,
+  sourceX,
+  sourceY,
+  sourcePosition,
+  targetX,
+  targetY,
+  targetPosition,
+  targetHandleId,
+  markerEnd,
+}: EdgeProps) {
+  const [edgePath] = getSmoothStepPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+    borderRadius: 0,
+    offset: targetHandleId === "b" ? 56 : 24,
+  });
+
+  return <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} />;
+}
+
 const nodeTypes = {
   controlBlock: ControlBlockNode,
+};
+
+const edgeTypes = {
+  controlEdge: ControlEdge,
 };
 
 function buildPreviewNodeData(blockType: BlockType): CanvasNodeData {
@@ -1348,7 +1415,7 @@ function ControlRoom() {
       addEdge(
         {
           ...connection,
-          type: "smoothstep",
+          type: "controlEdge",
           markerEnd: defaultMarker,
         },
         currentEdges,
@@ -1505,9 +1572,6 @@ function ControlRoom() {
       setProjectFilePath(targetPath);
       rememberRecentProject(targetPath);
       setSimulationStatus(`Saved project to ${targetPath}`);
-      if (needsPathSelection) {
-        void invoke("reveal_in_explorer", { path: targetPath }).catch(() => undefined);
-      }
     } catch {
       setSimulationStatus("Unable to save the project");
     }
@@ -2074,6 +2138,7 @@ function ControlRoom() {
               nodes={nodes}
               edges={edges}
               nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
               onNodesChange={handleNodesChange}
               onEdgesChange={onEdgesChange}
               onConnect={handleConnect}
