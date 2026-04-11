@@ -291,6 +291,10 @@ function parseNumber(value: string | undefined, fallback: number) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function containsDecimalComma(value: string | undefined) {
+  return (value ?? "").includes(",");
+}
+
 function formatSignalValue(value: number | null, decimalsText = "2", unit = "") {
   if (value === null || Number.isNaN(value)) {
     return "--";
@@ -964,6 +968,7 @@ function ControlRoom() {
   const [timeSeconds, setTimeSeconds] = useState(0);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [zoomStep, setZoomStep] = useState(0.05);
+  const [inputErrorMessage, setInputErrorMessage] = useState<string | null>(null);
   const [rackDrag, setRackDrag] = useState<RackDragState | null>(null);
   const rackDragRef = useRef<RackDragState | null>(null);
   const rackDragHandledRef = useRef(false);
@@ -1368,11 +1373,33 @@ function ControlRoom() {
     setRackDrag(nextDrag);
   }
 
-  function handlePropertyChange(key: string, value: string) {
+  function showDecimalSeparatorError() {
+    setInputErrorMessage("Use periods for decimals, for example 1.0 instead of 1,0.");
+    setSimulationStatus("Invalid decimal separator");
+  }
+
+  function handleTopBarDecimalChange(
+    setter: React.Dispatch<React.SetStateAction<string>>,
+    value: string,
+  ) {
+    if (containsDecimalComma(value)) {
+      showDecimalSeparatorError();
+      return;
+    }
+
+    setter(value);
+  }
+
+  function handlePropertyChange(field: PropertyField, value: string) {
+    if (field.inputMode === "decimal" && containsDecimalComma(value)) {
+      showDecimalSeparatorError();
+      return;
+    }
+
     updateInspectorNode((node) => {
       const properties = {
         ...node.data.properties,
-        [key]: value,
+        [field.key]: value,
       };
 
       return {
@@ -1396,6 +1423,11 @@ function ControlRoom() {
   }
 
   function handleStartSimulation() {
+    if (containsDecimalComma(endTime) || containsDecimalComma(stepSize)) {
+      showDecimalSeparatorError();
+      return;
+    }
+
     const parsedEndTime = parseNumber(endTime, Number.NaN);
     const parsedStepSize = parseNumber(stepSize, Number.NaN);
 
@@ -1422,6 +1454,22 @@ function ControlRoom() {
 
   async function handleSaveProject(saveAs = false) {
     try {
+      if (containsDecimalComma(endTime) || containsDecimalComma(stepSize)) {
+        showDecimalSeparatorError();
+        return;
+      }
+
+      const hasCommaInProperties = (nodes as CanvasNode[]).some((node) =>
+        node.data.propertyFields.some(
+          (field) => field.inputMode === "decimal" && containsDecimalComma(node.data.properties[field.key]),
+        ),
+      );
+
+      if (hasCommaInProperties) {
+        showDecimalSeparatorError();
+        return;
+      }
+
       const needsPathSelection = saveAs || !projectFilePath;
       const parsedEndTime = parseNumber(endTime, 10);
       const parsedStepSize = parseNumber(stepSize, 0.1);
@@ -1924,24 +1972,20 @@ function ControlRoom() {
           <label className="simulation-strip__field">
             <span>End Time</span>
             <input
-              type="number"
+              type="text"
               inputMode="decimal"
-              step="0.1"
-              min="0"
               value={endTime}
-              onChange={(event) => setEndTime(event.target.value)}
+              onChange={(event) => handleTopBarDecimalChange(setEndTime, event.target.value)}
             />
           </label>
 
           <label className="simulation-strip__field">
             <span>Step Size</span>
             <input
-              type="number"
+              type="text"
               inputMode="decimal"
-              step="0.01"
-              min="0"
               value={stepSize}
-              onChange={(event) => setStepSize(event.target.value)}
+              onChange={(event) => handleTopBarDecimalChange(setStepSize, event.target.value)}
             />
           </label>
           </div>
@@ -2121,7 +2165,7 @@ function ControlRoom() {
                   {field.inputMode === "select" ? (
                     <select
                       value={inspectorNode.data.properties[field.key] ?? ""}
-                      onChange={(event) => handlePropertyChange(field.key, event.target.value)}
+                      onChange={(event) => handlePropertyChange(field, event.target.value)}
                     >
                       {field.options?.map((option) => (
                         <option key={option} value={option}>
@@ -2131,11 +2175,11 @@ function ControlRoom() {
                     </select>
                   ) : (
                     <input
-                      type={field.inputMode === "decimal" ? "number" : "text"}
+                      type="text"
                       inputMode={field.inputMode}
                       step={field.step}
                       value={inspectorNode.data.properties[field.key] ?? ""}
-                      onChange={(event) => handlePropertyChange(field.key, event.target.value)}
+                      onChange={(event) => handlePropertyChange(field, event.target.value)}
                     />
                   )}
                 </label>
@@ -2182,6 +2226,17 @@ function ControlRoom() {
             document.body,
           )
         : null}
+      {inputErrorMessage ? (
+        <div className="input-error-modal" role="dialog" aria-modal="true" aria-label="invalid number format">
+          <div className="input-error-modal__panel">
+            <strong>Invalid Number Format</strong>
+            <p>{inputErrorMessage}</p>
+            <button type="button" className="simulation-strip__button" onClick={() => setInputErrorMessage(null)}>
+              OK
+            </button>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

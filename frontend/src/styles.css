@@ -116,6 +116,44 @@ button {
   line-height: 1.35;
 }
 
+.input-error-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(72, 78, 68, 0.28);
+}
+
+.input-error-modal__panel {
+  width: min(24rem, 100%);
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 2px solid #f7f7f1;
+  border-right-color: #6d7168;
+  border-bottom-color: #6d7168;
+  background: #c6cbbb;
+  box-shadow: inset 1px 1px 0 #dde1d5, inset -1px -1px 0 #8e9488;
+}
+
+.input-error-modal__panel strong,
+.input-error-modal__panel p {
+  margin: 0;
+}
+
+.input-error-modal__panel strong {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.input-error-modal__panel p {
+  color: #40473f;
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
 .simulation-strip,
 .workspace-footer,
 .panel,
@@ -340,6 +378,40 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.simulation-strip__menu-note {
+  display: grid;
+  gap: 0.14rem;
+  padding: 0.35rem 0.4rem;
+  border: 1px solid #7b8176;
+  background: linear-gradient(180deg, #d9ddcf 0%, #ccd2c3 100%);
+}
+
+.simulation-strip__menu-note strong,
+.simulation-strip__menu-note span,
+.simulation-strip__menu-note em {
+  font-style: normal;
+}
+
+.simulation-strip__menu-note strong {
+  color: #253024;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.simulation-strip__menu-note span {
+  color: #4e584c;
+  font-size: 0.6rem;
+}
+
+.simulation-strip__menu-note em {
+  color: #566055;
+  font-size: 0.52rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .simulation-strip__simulation-group {
