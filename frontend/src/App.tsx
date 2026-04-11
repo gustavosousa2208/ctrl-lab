@@ -70,6 +70,25 @@ type SerializedEdge = {
   targetPortId: string | null;
 };
 
+type ProjectGraphIndex = {
+  nodesById: Record<
+    string,
+    {
+      type: BlockType;
+      role: string;
+      inputPortIds: string[];
+      outputPortIds: string[];
+    }
+  >;
+  incomingEdgesByNodeId: Record<string, string[]>;
+  outgoingEdgesByNodeId: Record<string, string[]>;
+};
+
+type RecentProject = {
+  path: string;
+  name: string;
+  openedAt: string;
+};
 
 type ProjectDocument = {
   version: 1;
@@ -83,6 +102,7 @@ type ProjectDocument = {
   };
   nodes: SerializedNode[];
   edges: SerializedEdge[];
+  graphIndex?: ProjectGraphIndex;
 };
 
 type EditorSnapshot = {
@@ -222,6 +242,7 @@ const emptySignalContext: FlowSignalsContextValue = {
   edges: [],
 };
 const FlowSignalsContext = createContext<FlowSignalsContextValue>(emptySignalContext);
+const recentProjectsStorageKey = "ctrl-lab-recent-projects";
 
 function parseNumber(value: string | undefined, fallback: number) {
   const parsed = Number.parseFloat(value ?? "");
@@ -462,6 +483,39 @@ function handleOffset(index: number, total: number, nodeHeight: number) {
   return `${startCenter + index * gridSize - centerOffset}px`;
 }
 
+function buildProjectGraphIndex(nodes: CanvasNode[], edges: CanvasEdge[]): ProjectGraphIndex {
+  const nodesById = Object.fromEntries(
+    nodes.map((node) => [
+      node.id,
+      {
+        type: node.data.blockType,
+        role: node.data.role,
+        inputPortIds: [...node.data.inputs],
+        outputPortIds: [...node.data.outputs],
+      },
+    ]),
+  );
+
+  const incomingEdgesByNodeId = Object.fromEntries(nodes.map((node) => [node.id, [] as string[]]));
+  const outgoingEdgesByNodeId = Object.fromEntries(nodes.map((node) => [node.id, [] as string[]]));
+
+  for (const edge of edges) {
+    if (incomingEdgesByNodeId[edge.target]) {
+      incomingEdgesByNodeId[edge.target].push(edge.id);
+    }
+
+    if (outgoingEdgesByNodeId[edge.source]) {
+      outgoingEdgesByNodeId[edge.source].push(edge.id);
+    }
+  }
+
+  return {
+    nodesById,
+    incomingEdgesByNodeId,
+    outgoingEdgesByNodeId,
+  };
+}
+
 function getIncomingEdge(edges: CanvasEdge[], nodeId: string, handleId: string) {
   return edges.find((edge) => edge.target === nodeId && edge.targetHandle === handleId);
 }
@@ -582,6 +636,7 @@ function buildProjectDocument(
     },
     nodes: nodes.map(toSerializedNode),
     edges: edges.map(toSerializedEdge),
+    graphIndex: buildProjectGraphIndex(nodes, edges),
   };
 }
 
@@ -778,6 +833,35 @@ function ControlRoom() {
   const [stepSize, setStepSize] = useState("0.1");
   const [simulationStatus, setSimulationStatus] = useState("Idle");
   const [projectFilePath, setProjectFilePath] = useState<string | null>(null);
+  const [recentProjects, setRecentProjects] = useState<RecentProject[]>(() => {
+    if (typeof window === "undefined") {
+      return [];
+    }
+
+    try {
+      const stored = window.localStorage.getItem(recentProjectsStorageKey);
+      if (!stored) {
+        return [];
+      }
+
+      const parsed = JSON.parse(stored) as unknown;
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+
+      return parsed.filter(
+        (entry): entry is RecentProject =>
+          !!entry &&
+          typeof entry === "object" &&
+          typeof (entry as RecentProject).path === "string" &&
+          typeof (entry as RecentProject).name === "string" &&
+          typeof (entry as RecentProject).openedAt === "string",
+      );
+    } catch {
+      return [];
+    }
+  });
+  const [isHomeVisible, setIsHomeVisible] = useState(true);
   const [activeMenu, setActiveMenu] = useState<"file" | null>(null);
   const [isSimulationRunning, setIsSimulationRunning] = useState(false);
   const [timeSeconds, setTimeSeconds] = useState(0);
@@ -817,6 +901,14 @@ function ControlRoom() {
 
     return () => window.clearInterval(intervalId);
   }, [isSimulationRunning]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(recentProjectsStorageKey, JSON.stringify(recentProjects));
+    } catch {
+      // Ignore local persistence failures.
+    }
+  }, [recentProjects]);
 
   useEffect(() => {
     if (!activeMenu) {
@@ -955,6 +1047,23 @@ function ControlRoom() {
     setIsSimulationRunning(false);
     setTimeSeconds(0);
     setZoomStep(project.simulation.zoomStep ?? 0.05);
+  }
+
+  function getProjectName(projectPath: string) {
+    return projectPath.split(/[/\\]/).pop() ?? projectPath;
+  }
+
+  function rememberRecentProject(projectPath: string) {
+    const nextEntry: RecentProject = {
+      path: projectPath,
+      name: getProjectName(projectPath),
+      openedAt: new Date().toISOString(),
+    };
+
+    setRecentProjects((currentProjects) => {
+      const dedupedProjects = currentProjects.filter((project) => project.path !== projectPath);
+      return [nextEntry, ...dedupedProjects].slice(0, 8);
+    });
   }
 
   function createNode(blockType: BlockType, clientX: number, clientY: number) {
@@ -1096,6 +1205,7 @@ function ControlRoom() {
     setEndTime("10");
     setStepSize("0.1");
     setProjectFilePath(null);
+    setIsHomeVisible(false);
     setSimulationStatus("Started a new blank project");
   }
 
@@ -1156,10 +1266,27 @@ function ControlRoom() {
 
       await writeTextFile(targetPath, JSON.stringify(projectDocument, null, 2));
       setProjectFilePath(targetPath);
+      rememberRecentProject(targetPath);
       setSimulationStatus(`Saved project to ${targetPath}`);
     } catch {
       setSimulationStatus("Unable to save the project");
     }
+  }
+
+  async function openProjectAtPath(selectedPath: string) {
+    const contents = await readTextFile(selectedPath);
+    const parsed = JSON.parse(contents) as unknown;
+
+    if (!isProjectDocument(parsed)) {
+      throw new Error("invalid-project");
+    }
+
+    pushHistorySnapshot();
+    restoreProject(parsed);
+    setProjectFilePath(selectedPath);
+    setIsHomeVisible(false);
+    rememberRecentProject(selectedPath);
+    setSimulationStatus(`Opened ${selectedPath}`);
   }
 
   async function handleOpenProject() {
@@ -1181,24 +1308,40 @@ function ControlRoom() {
         return;
       }
 
-      const contents = await readTextFile(selectedPath);
-      const parsed = JSON.parse(contents) as unknown;
-
-      if (!isProjectDocument(parsed)) {
-        throw new Error("invalid-project");
-      }
-
-      pushHistorySnapshot();
-      restoreProject(parsed);
-      setProjectFilePath(selectedPath);
-      setSimulationStatus(`Opened ${selectedPath}`);
+      await openProjectAtPath(selectedPath);
     } catch {
       setSimulationStatus("Unable to open that file");
     }
   }
 
-  function handleFileMenuAction(action: "new" | "open" | "save" | "saveAs") {
+  async function handleOpenRecentProject(projectPath: string) {
     setActiveMenu(null);
+
+    try {
+      await openProjectAtPath(projectPath);
+    } catch {
+      setRecentProjects((currentProjects) => currentProjects.filter((project) => project.path !== projectPath));
+      setSimulationStatus("Unable to open that recent project");
+    }
+  }
+
+  function handleCloseProject() {
+    pushHistorySnapshot();
+    resetWorkspace();
+    setEndTime("10");
+    setStepSize("0.1");
+    setProjectFilePath(null);
+    setIsHomeVisible(true);
+    setSimulationStatus("Closed current project");
+  }
+
+  function handleFileMenuAction(action: "close" | "new" | "open" | "save" | "saveAs") {
+    setActiveMenu(null);
+
+    if (action === "close") {
+      handleCloseProject();
+      return;
+    }
 
     if (action === "new") {
       handleNewProject();
@@ -1345,6 +1488,14 @@ function ControlRoom() {
                     type="button"
                     className="simulation-strip__menu-item"
                     role="menuitem"
+                    onClick={() => handleFileMenuAction("close")}
+                  >
+                    Close Project
+                  </button>
+                  <button
+                    type="button"
+                    className="simulation-strip__menu-item"
+                    role="menuitem"
                     onClick={() => handleFileMenuAction("new")}
                   >
                     New
@@ -1373,6 +1524,22 @@ function ControlRoom() {
                   >
                     Save As
                   </button>
+                  {recentProjects.length > 0 ? <div className="simulation-strip__menu-divider" /> : null}
+                  {recentProjects.length > 0 ? (
+                    <div className="simulation-strip__menu-label">Open Recent</div>
+                  ) : null}
+                  {recentProjects.map((project) => (
+                    <button
+                      key={project.path}
+                      type="button"
+                      className="simulation-strip__menu-item simulation-strip__menu-item--recent"
+                      role="menuitem"
+                      onClick={() => void handleOpenRecentProject(project.path)}
+                    >
+                      <strong>{project.name}</strong>
+                      <span>{project.path}</span>
+                    </button>
+                  ))}
                 </div>
               ) : null}
             </div>
@@ -1422,6 +1589,50 @@ function ControlRoom() {
         </div>
       </section>
 
+      {isHomeVisible ? (
+        <section className="workspace-home" aria-label="home">
+          <article className="workspace-home__hero">
+            <span className="workspace-home__eyebrow">CTRL-LAB</span>
+            <h1>Open control-system projects and continue where you left off.</h1>
+            <p>
+              The project file already carries the node list, edge list, block ids, and input/output port
+              mappings the backend needs to start graph execution.
+            </p>
+            <div className="workspace-home__actions">
+              <button type="button" className="workspace-home__button" onClick={handleNewProject}>
+                New Project
+              </button>
+              <button type="button" className="workspace-home__button" onClick={() => void handleOpenProject()}>
+                Open Project
+              </button>
+            </div>
+          </article>
+
+          <article className="workspace-home__recent">
+            <div className="panel__title">Recent Projects</div>
+            {recentProjects.length > 0 ? (
+              <div className="workspace-home__recent-list">
+                {recentProjects.map((project) => (
+                  <button
+                    key={project.path}
+                    type="button"
+                    className="workspace-home__recent-item"
+                    onClick={() => void handleOpenRecentProject(project.path)}
+                  >
+                    <strong>{project.name}</strong>
+                    <span>{project.path}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="workspace-home__empty">
+                <strong>No recent projects yet</strong>
+                <p>Open or save a project once and it will appear here for quick access.</p>
+              </div>
+            )}
+          </article>
+        </section>
+      ) : (
       <section className="workspace-grid">
         <aside className="panel panel--left">
           <div className="panel__title">Block Rack</div>
@@ -1566,6 +1777,7 @@ function ControlRoom() {
           )}
         </aside>
       </section>
+      )}
       <section className="workspace-footer" aria-label="workspace status">
         <div className="workspace-footer__status">
           <span>Status</span>

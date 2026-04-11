@@ -1,4 +1,4 @@
-# Project Notes
+# Frontend Subproject Notes
 
 - Simulation behavior must remain decoupled from visuals.
 - Block presentation should stay compact and grid-aligned: use a single visible name, avoid duplicated labels, and avoid descriptive body copy inside canvas nodes.
