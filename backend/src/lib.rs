@@ -116,9 +116,22 @@ pub enum SimulationError {
         property: String,
         value: String,
     },
+    InvalidCoefficientList {
+        node_id: NodeId,
+        property: String,
+        value: String,
+    },
     MissingInputEdge {
         node_id: NodeId,
         port_id: PortId,
+    },
+    UnsupportedTransferFunctionShape {
+        node_id: NodeId,
+        numerator_len: usize,
+        denominator_len: usize,
+    },
+    InvalidTransferFunctionDenominator {
+        node_id: NodeId,
     },
     UnsupportedNodeType {
         node_id: NodeId,
@@ -306,10 +319,32 @@ impl fmt::Display for SimulationError {
                 f,
                 "node `{node_id}` has invalid numeric property `{property}` with value `{value}`"
             ),
+            Self::InvalidCoefficientList {
+                node_id,
+                property,
+                value,
+            } => write!(
+                f,
+                "node `{node_id}` has invalid coefficient list `{property}` with value `{value}`"
+            ),
             Self::MissingInputEdge { node_id, port_id } => {
                 write!(
                     f,
                     "node `{node_id}` is missing a validated input edge for port `{port_id}`"
+                )
+            }
+            Self::UnsupportedTransferFunctionShape {
+                node_id,
+                numerator_len,
+                denominator_len,
+            } => write!(
+                f,
+                "node `{node_id}` uses unsupported transfer function shape with {numerator_len} numerator coefficients and {denominator_len} denominator coefficients"
+            ),
+            Self::InvalidTransferFunctionDenominator { node_id } => {
+                write!(
+                    f,
+                    "node `{node_id}` has an invalid transfer function denominator leading coefficient"
                 )
             }
             Self::UnsupportedNodeType { node_id, node_type } => {
@@ -602,6 +637,7 @@ pub fn simulate_validated_dag(dag: &ValidatedDag) -> Result<SimulationOutput, Si
         .collect();
 
     let mut integrator_state: HashMap<NodeId, f64> = HashMap::new();
+    let mut transfer_function_state: HashMap<NodeId, f64> = HashMap::new();
     for node_id in &dag.topological_order {
         let node = dag
             .nodes
@@ -617,6 +653,9 @@ pub fn simulate_validated_dag(dag: &ValidatedDag) -> Result<SimulationOutput, Si
                     }
                 })?;
             integrator_state.insert(node.id.clone(), initial_value);
+        }
+        if node.node_type == "transferFunction" {
+            transfer_function_state.insert(node.id.clone(), 0.0);
         }
     }
 
@@ -641,6 +680,9 @@ pub fn simulate_validated_dag(dag: &ValidatedDag) -> Result<SimulationOutput, Si
                 "integrator" => *integrator_state
                     .get(node_id)
                     .expect("integrator state must exist after initialization"),
+                "transferFunction" => *transfer_function_state
+                    .get(node_id)
+                    .expect("transfer function state must exist after initialization"),
                 "sum" => {
                     let input_a =
                         read_input_value(&current_values, &incoming_edges_by_port, node_id, "a")?;
@@ -683,6 +725,17 @@ pub fn simulate_validated_dag(dag: &ValidatedDag) -> Result<SimulationOutput, Si
                         .get_mut(node_id)
                         .expect("integrator state must exist");
                     *state += input * step_size;
+                }
+                if node.node_type == "transferFunction" {
+                    let input =
+                        read_input_value(&current_values, &incoming_edges_by_port, node_id, "in")?;
+                    let state = transfer_function_state
+                        .get_mut(node_id)
+                        .expect("transfer function state must exist");
+                    let params = parse_transfer_function(node)?;
+                    *state += step_size
+                        * ((params.numerator_gain * input - params.output_gain * *state)
+                            / params.derivative_gain);
                 }
             }
         }
@@ -743,6 +796,73 @@ fn parse_numeric_property(
     value.trim().parse::<f64>().map_err(|_| value.clone())
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FirstOrderTransferFunction {
+    derivative_gain: f64,
+    output_gain: f64,
+    numerator_gain: f64,
+}
+
+fn parse_transfer_function(
+    node: &SerializedNode,
+) -> Result<FirstOrderTransferFunction, SimulationError> {
+    let numerator = parse_numeric_list_property(node, "numerator")?;
+    let denominator = parse_numeric_list_property(node, "denominator")?;
+
+    if numerator.len() != 1 || denominator.len() != 2 {
+        return Err(SimulationError::UnsupportedTransferFunctionShape {
+            node_id: node.id.clone(),
+            numerator_len: numerator.len(),
+            denominator_len: denominator.len(),
+        });
+    }
+
+    let derivative_gain = denominator[0];
+    if !derivative_gain.is_finite() || derivative_gain.abs() <= f64::EPSILON {
+        return Err(SimulationError::InvalidTransferFunctionDenominator {
+            node_id: node.id.clone(),
+        });
+    }
+
+    Ok(FirstOrderTransferFunction {
+        derivative_gain,
+        output_gain: denominator[1],
+        numerator_gain: numerator[0],
+    })
+}
+
+fn parse_numeric_list_property(
+    node: &SerializedNode,
+    property: &str,
+) -> Result<Vec<f64>, SimulationError> {
+    let raw_value = node.properties.get(property).cloned().unwrap_or_default();
+
+    let mut values = Vec::new();
+    for token in raw_value
+        .split(|character: char| character.is_whitespace() || character == ',')
+        .filter(|token| !token.is_empty())
+    {
+        let parsed = token
+            .parse::<f64>()
+            .map_err(|_| SimulationError::InvalidCoefficientList {
+                node_id: node.id.clone(),
+                property: property.to_string(),
+                value: raw_value.clone(),
+            })?;
+        values.push(parsed);
+    }
+
+    if values.is_empty() {
+        return Err(SimulationError::InvalidCoefficientList {
+            node_id: node.id.clone(),
+            property: property.to_string(),
+            value: raw_value,
+        });
+    }
+
+    Ok(values)
+}
+
 fn evaluate_equation(equation: Option<&str>, a: f64, b: f64) -> f64 {
     let (left_operator, right_operator) = parse_equation_tokens(equation);
 
@@ -801,6 +921,102 @@ mod tests {
         parse_project_json(&serde_json::to_string(&value).expect("json must serialize"))
     }
 
+    fn transfer_function_fixture_value() -> Value {
+        json!({
+            "version": 1,
+            "kind": "ctrl-lab-project",
+            "generatedAt": "2026-04-12T00:00:00.000Z",
+            "title": "first-order-tf",
+            "simulation": {
+                "endTime": 1.0,
+                "stepSize": 0.1
+            },
+            "nodes": [
+                {
+                    "id": "constant-1",
+                    "type": "constant",
+                    "label": "Constant",
+                    "role": "const-01",
+                    "position": { "x": 0, "y": 0 },
+                    "properties": { "value": "1.0", "dataType": "f32" }
+                },
+                {
+                    "id": "transferFunction-2",
+                    "type": "transferFunction",
+                    "label": "Transfer Function",
+                    "role": "tf-01",
+                    "position": { "x": 144, "y": 0 },
+                    "properties": {
+                        "numerator": "1.0",
+                        "denominator": "1.0 1.0",
+                        "stateName": "x",
+                        "dataType": "f32"
+                    }
+                },
+                {
+                    "id": "scope-3",
+                    "type": "scope",
+                    "label": "Scope",
+                    "role": "scope-01",
+                    "position": { "x": 288, "y": 0 },
+                    "properties": {
+                        "channel": "CH-1",
+                        "timebase": "1 s/div",
+                        "dataType": "f32"
+                    }
+                }
+            ],
+            "edges": [
+                {
+                    "id": "edge-constant-to-tf",
+                    "sourceNodeId": "constant-1",
+                    "sourcePortId": "out",
+                    "targetNodeId": "transferFunction-2",
+                    "targetPortId": "in"
+                },
+                {
+                    "id": "edge-tf-to-scope",
+                    "sourceNodeId": "transferFunction-2",
+                    "sourcePortId": "out",
+                    "targetNodeId": "scope-3",
+                    "targetPortId": "in"
+                }
+            ],
+            "graphIndex": {
+                "nodesById": {
+                    "constant-1": {
+                        "type": "constant",
+                        "role": "const-01",
+                        "inputPortIds": [],
+                        "outputPortIds": ["out"]
+                    },
+                    "transferFunction-2": {
+                        "type": "transferFunction",
+                        "role": "tf-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": ["out"]
+                    },
+                    "scope-3": {
+                        "type": "scope",
+                        "role": "scope-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": []
+                    }
+                },
+                "incomingEdgesByNodeId": {
+                    "constant-1": [],
+                    "transferFunction-2": ["edge-constant-to-tf"],
+                    "scope-3": ["edge-tf-to-scope"]
+                },
+                "outgoingEdgesByNodeId": {
+                    "constant-1": ["edge-constant-to-tf"],
+                    "transferFunction-2": ["edge-tf-to-scope"],
+                    "scope-3": []
+                }
+            }
+        })
+    }
+
     fn assert_approx_eq(left: f64, right: f64) {
         let delta = (left - right).abs();
         assert!(
@@ -845,6 +1061,62 @@ mod tests {
         assert_approx_eq(integrator_2.last().copied().unwrap(), 5.0);
         assert_approx_eq(sum.last().copied().unwrap(), 5.0);
         assert_approx_eq(scope.last().copied().unwrap(), 5.0);
+    }
+
+    #[test]
+    fn simulates_constant_into_first_order_transfer_function() {
+        let dag = parse_value(transfer_function_fixture_value())
+            .expect("transfer function fixture should parse");
+        let simulation =
+            simulate_validated_dag(&dag).expect("transfer function fixture should simulate");
+
+        assert_eq!(simulation.times.len(), 11);
+
+        let tf = simulation
+            .values_by_node_id
+            .get("transferFunction-2")
+            .expect("transfer function trace must exist");
+        let scope = simulation
+            .values_by_node_id
+            .get("scope-3")
+            .expect("scope trace must exist");
+
+        assert_approx_eq(tf.first().copied().unwrap(), 0.0);
+        assert_approx_eq(tf.get(1).copied().unwrap(), 0.1);
+        assert_approx_eq(*tf.last().unwrap(), 0.6513215599);
+        assert_approx_eq(*scope.last().unwrap(), 0.6513215599);
+    }
+
+    #[test]
+    fn rejects_invalid_transfer_function_coefficients() {
+        let mut value = transfer_function_fixture_value();
+        value["nodes"][1]["properties"]["numerator"] = json!("1.0 nope");
+
+        let dag = parse_value(value).expect("graph shape should still validate");
+        assert_eq!(
+            simulate_validated_dag(&dag),
+            Err(SimulationError::InvalidCoefficientList {
+                node_id: "transferFunction-2".to_string(),
+                property: "numerator".to_string(),
+                value: "1.0 nope".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_transfer_function_shape() {
+        let mut value = transfer_function_fixture_value();
+        value["nodes"][1]["properties"]["numerator"] = json!("1.0 0.5");
+
+        let dag = parse_value(value).expect("graph shape should still validate");
+        assert_eq!(
+            simulate_validated_dag(&dag),
+            Err(SimulationError::UnsupportedTransferFunctionShape {
+                node_id: "transferFunction-2".to_string(),
+                numerator_len: 2,
+                denominator_len: 2,
+            })
+        );
     }
 
     #[test]
