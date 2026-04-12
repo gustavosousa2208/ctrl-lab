@@ -154,6 +154,25 @@ button {
   line-height: 1.4;
 }
 
+.input-error-modal__panel--report {
+  width: min(48rem, 100%);
+}
+
+.input-error-modal__panel--report pre {
+  margin: 0;
+  max-height: min(28rem, 60vh);
+  overflow: auto;
+  padding: 0.6rem;
+  border: 1px solid #8a9084;
+  background: #d3d8c9;
+  color: #1f241f;
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .simulation-strip,
 .workspace-footer,
 .panel,
@@ -829,6 +848,12 @@ button {
     linear-gradient(180deg, #d6ddcf 0%, #c7cebf 100%);
 }
 
+.library-card--transferFunction {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent 55%),
+    linear-gradient(180deg, #d8d4e2 0%, #c9c3d7 100%);
+}
+
 .library-card--squareWave {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent 55%),
@@ -1100,7 +1125,8 @@ button {
 
 .flow-node--sum,
 .flow-node--constant,
-.flow-node--integrator {
+.flow-node--integrator,
+.flow-node--transferFunction {
   padding: 0;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent 58%),
@@ -1108,7 +1134,8 @@ button {
 }
 
 .flow-node--sum,
-.flow-node--integrator {
+.flow-node--integrator,
+.flow-node--transferFunction {
   width: 96px;
   height: 96px;
   min-height: 96px;
@@ -1121,6 +1148,7 @@ button {
 
 .flow-node--constant::after,
 .flow-node--integrator::after,
+.flow-node--transferFunction::after,
 .flow-node--sum::after {
   display: none;
 }
@@ -1191,6 +1219,42 @@ button {
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.flow-node__transfer-function-value {
+  display: grid;
+  place-items: center;
+  min-height: 96px;
+  padding: 0.5rem;
+  color: #253024;
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.flow-node--transferFunction[data-state-name]::before {
+  content: attr(data-state-name);
+  position: absolute;
+  left: 50%;
+  bottom: -1.05rem;
+  transform: translateX(-50%);
+  padding: 0.08rem 0.26rem;
+  border: 1px solid rgba(77, 85, 74, 0.35);
+  background: rgba(238, 240, 233, 0.94);
+  color: #334133;
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 80ms ease-out;
+}
+
+.flow-node--transferFunction[data-state-name]:hover::before {
+  opacity: 1;
 }
 
 .flow-node__handle.react-flow__handle-connecting {

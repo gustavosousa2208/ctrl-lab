@@ -4,6 +4,7 @@ export type NodeId = string;
 export type BlockType =
   | "constant"
   | "integrator"
+  | "transferFunction"
   | "sum"
   | "display"
   | "scope"

@@ -1,6 +1,7 @@
 import { Component, createContext, type CSSProperties, type ReactNode } from "react";
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { invoke } from "@tauri-apps/api/core";
 import {
   addEdge,
   applyNodeChanges,
@@ -1036,6 +1037,7 @@ function ControlRoom() {
   const [zoomLevel, setZoomLevel] = useState(1);
   const [zoomStep, setZoomStep] = useState(0.05);
   const [inputErrorMessage, setInputErrorMessage] = useState<string | null>(null);
+  const [compileReport, setCompileReport] = useState<string | null>(null);
   const [rackDrag, setRackDrag] = useState<RackDragState | null>(null);
   const rackDragRef = useRef<RackDragState | null>(null);
   const rackDragHandledRef = useRef(false);
@@ -1517,6 +1519,47 @@ function ControlRoom() {
     setTimeSeconds(0);
     setIsSimulationRunning(true);
     setSimulationStatus("Simulation running");
+  }
+
+  async function handleCompileProject() {
+    try {
+      if (containsDecimalComma(endTime) || containsDecimalComma(stepSize)) {
+        showDecimalSeparatorError();
+        return;
+      }
+
+      const hasCommaInProperties = (nodes as CanvasNode[]).some((node) =>
+        node.data.propertyFields.some(
+          (field) => field.inputMode === "decimal" && containsDecimalComma(node.data.properties[field.key]),
+        ),
+      );
+
+      if (hasCommaInProperties) {
+        showDecimalSeparatorError();
+        return;
+      }
+
+      const parsedEndTime = parseNumber(endTime, 10);
+      const parsedStepSize = parseNumber(stepSize, 0.1);
+      const projectDocument = buildProjectDocument(
+        nodes as CanvasNode[],
+        edges,
+        parsedEndTime,
+        parsedStepSize,
+        zoomStep,
+        viewportRef.current,
+      );
+      setSimulationStatus("Compiling project");
+      const report = await invoke<string>("compile_project_report", {
+        projectJson: JSON.stringify(projectDocument, null, 2),
+      });
+      setCompileReport(report);
+      setSimulationStatus("Compile completed");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCompileReport(message);
+      setSimulationStatus("Compile failed");
+    }
   }
 
   async function handleSaveProject(saveAs = false) {
@@ -2029,6 +2072,9 @@ function ControlRoom() {
 
         <div className="simulation-strip__section simulation-strip__section--simulation">
           <div className="simulation-strip__simulation-group">
+          <button type="button" className="simulation-strip__button" onClick={() => void handleCompileProject()}>
+            Compile Project
+          </button>
           <button type="button" className="simulation-strip__button" onClick={handleStartSimulation}>
             {isSimulationRunning ? "Stop Simulation" : "Start Simulation"}
           </button>
@@ -2298,6 +2344,17 @@ function ControlRoom() {
             <p>{inputErrorMessage}</p>
             <button type="button" className="simulation-strip__button" onClick={() => setInputErrorMessage(null)}>
               OK
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {compileReport ? (
+        <div className="input-error-modal" role="dialog" aria-modal="true" aria-label="compile report">
+          <div className="input-error-modal__panel input-error-modal__panel--report">
+            <strong>Compile Report</strong>
+            <pre>{compileReport}</pre>
+            <button type="button" className="simulation-strip__button" onClick={() => setCompileReport(null)}>
+              Close
             </button>
           </div>
         </div>
