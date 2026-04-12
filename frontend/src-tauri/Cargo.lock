@@ -472,9 +472,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctrl-backend"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ctrl-lab"
 version = "0.1.0"
 dependencies = [
+ "ctrl-backend",
+ "serde",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

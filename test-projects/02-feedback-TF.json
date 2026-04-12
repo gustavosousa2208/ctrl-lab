@@ -1,0 +1,172 @@
+{
+  "version": 1,
+  "kind": "ctrl-lab-project",
+  "generatedAt": "2026-04-11T22:21:45.718Z",
+  "title": "",
+  "simulation": {
+    "endTime": 10,
+    "stepSize": 0.1,
+    "zoomStep": 0.05,
+    "zoom": 1,
+    "viewportX": -115,
+    "viewportY": 170
+  },
+  "nodes": [
+    {
+      "id": "transferFunction-7",
+      "type": "transferFunction",
+      "label": "Transfer Function",
+      "role": "tf-01",
+      "position": {
+        "x": 600,
+        "y": 24
+      },
+      "properties": {
+        "numerator": "1.0",
+        "denominator": "1.0 1.0",
+        "stateName": "Temperature",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "constant-8",
+      "type": "constant",
+      "label": "Constant",
+      "role": "const-03",
+      "position": {
+        "x": 216,
+        "y": 24
+      },
+      "properties": {
+        "value": "1.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "scope-10",
+      "type": "scope",
+      "label": "Scope",
+      "role": "scope-01",
+      "position": {
+        "x": 984,
+        "y": -24
+      },
+      "properties": {
+        "channel": "CH-1",
+        "timebase": "1 s/div",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "sum-11",
+      "type": "sum",
+      "label": "Summing Node",
+      "role": "sum-01",
+      "position": {
+        "x": 432,
+        "y": 24
+      },
+      "properties": {
+        "equation": "+ -",
+        "dataType": "f32"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "xy-edge__transferFunction-7out-scope-10in",
+      "sourceNodeId": "transferFunction-7",
+      "sourcePortId": "out",
+      "targetNodeId": "scope-10",
+      "targetPortId": "in"
+    },
+    {
+      "id": "xy-edge__sum-11out-transferFunction-7in",
+      "sourceNodeId": "sum-11",
+      "sourcePortId": "out",
+      "targetNodeId": "transferFunction-7",
+      "targetPortId": "in"
+    },
+    {
+      "id": "xy-edge__constant-8out-sum-11a",
+      "sourceNodeId": "constant-8",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-11",
+      "targetPortId": "a"
+    },
+    {
+      "id": "xy-edge__transferFunction-7out-sum-11b",
+      "sourceNodeId": "transferFunction-7",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-11",
+      "targetPortId": "b"
+    }
+  ],
+  "graphIndex": {
+    "nodesById": {
+      "transferFunction-7": {
+        "type": "transferFunction",
+        "role": "tf-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "constant-8": {
+        "type": "constant",
+        "role": "const-03",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "scope-10": {
+        "type": "scope",
+        "role": "scope-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": []
+      },
+      "sum-11": {
+        "type": "sum",
+        "role": "sum-01",
+        "inputPortIds": [
+          "a",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      }
+    },
+    "incomingEdgesByNodeId": {
+      "transferFunction-7": [
+        "xy-edge__sum-11out-transferFunction-7in"
+      ],
+      "constant-8": [],
+      "scope-10": [
+        "xy-edge__transferFunction-7out-scope-10in"
+      ],
+      "sum-11": [
+        "xy-edge__constant-8out-sum-11a",
+        "xy-edge__transferFunction-7out-sum-11b"
+      ]
+    },
+    "outgoingEdgesByNodeId": {
+      "transferFunction-7": [
+        "xy-edge__transferFunction-7out-scope-10in",
+        "xy-edge__transferFunction-7out-sum-11b"
+      ],
+      "constant-8": [
+        "xy-edge__constant-8out-sum-11a"
+      ],
+      "scope-10": [],
+      "sum-11": [
+        "xy-edge__sum-11out-transferFunction-7in"
+      ]
+    }
+  }
+}

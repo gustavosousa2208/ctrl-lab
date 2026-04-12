@@ -158,6 +158,10 @@ button {
   width: min(48rem, 100%);
 }
 
+.input-error-modal__panel--plot {
+  width: min(52rem, 100%);
+}
+
 .input-error-modal__panel--report pre {
   margin: 0;
   max-height: min(28rem, 60vh);
@@ -171,6 +175,86 @@ button {
   line-height: 1.35;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.scope-plot__header,
+.scope-plot__stats,
+.scope-plot__legend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.scope-plot__header p,
+.scope-plot__stats span,
+.scope-plot__legend span {
+  margin: 0;
+  color: #40473f;
+  font-size: 0.74rem;
+}
+
+.scope-plot__stats,
+.scope-plot__legend {
+  flex-wrap: wrap;
+  padding: 0.1rem 0;
+}
+
+.scope-plot__layout {
+  display: grid;
+  grid-template-columns: 4rem minmax(0, 1fr);
+  align-items: stretch;
+  gap: 0.5rem;
+}
+
+.scope-plot__chart {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.scope-plot__y-axis,
+.scope-plot__x-axis {
+  display: grid;
+  color: #40473f;
+  font-size: 0.7rem;
+}
+
+.scope-plot__y-axis {
+  grid-template-rows: repeat(5, 1fr);
+  align-items: center;
+  justify-items: end;
+  padding: 0.25rem 0;
+}
+
+.scope-plot__x-axis {
+  grid-template-columns: repeat(5, 1fr);
+  align-items: start;
+}
+
+.scope-plot__x-axis span:nth-child(1) {
+  justify-self: start;
+}
+
+.scope-plot__x-axis span:nth-child(2),
+.scope-plot__x-axis span:nth-child(3),
+.scope-plot__x-axis span:nth-child(4) {
+  justify-self: center;
+}
+
+.scope-plot__x-axis span:nth-child(5) {
+  justify-self: end;
+}
+
+.scope-plot__frame {
+  border: 1px solid #7f8578;
+  background: #111713;
+  box-shadow: inset 1px 1px 0 rgba(230, 235, 222, 0.05);
+}
+
+.scope-plot__svg {
+  display: block;
+  width: 100%;
+  height: 16rem;
 }
 
 .simulation-strip,

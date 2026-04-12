@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ctrl_backend::simulate_project_json;
+use serde::Serialize;
+
 fn repo_root() -> Result<PathBuf, String> {
   let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   manifest_dir
@@ -73,12 +76,29 @@ fn compile_project_report(project_json: String) -> Result<String, String> {
   }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SimulationTraceResponse {
+  times: Vec<f64>,
+  values_by_node_id: std::collections::HashMap<String, Vec<f64>>,
+}
+
+#[tauri::command]
+fn simulate_project(project_json: String) -> Result<SimulationTraceResponse, String> {
+  let simulation = simulate_project_json(&project_json).map_err(|error| error.to_string())?;
+
+  Ok(SimulationTraceResponse {
+    times: simulation.times,
+    values_by_node_id: simulation.values_by_node_id,
+  })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_fs::init())
-    .invoke_handler(tauri::generate_handler![compile_project_report])
+    .invoke_handler(tauri::generate_handler![compile_project_report, simulate_project])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }

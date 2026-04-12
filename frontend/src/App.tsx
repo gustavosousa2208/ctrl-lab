@@ -115,6 +115,11 @@ type ProjectDocument = {
   graphIndex?: ProjectGraphIndex;
 };
 
+type SimulationTrace = {
+  times: number[];
+  valuesByNodeId: Record<string, number[]>;
+};
+
 type EditorSnapshot = {
   nodes: SerializedNode[];
   edges: SerializedEdge[];
@@ -355,14 +360,6 @@ function parseEquationTokens(equation: string | undefined) {
   return { leftOperator, rightOperator };
 }
 
-function divideSafely(dividend: number, divisor: number) {
-  if (divisor === 0) {
-    return 0;
-  }
-
-  return dividend / divisor;
-}
-
 function clampZoomLevel(zoom: number, zoomStep: number) {
   if (!Number.isFinite(zoom)) {
     return 1;
@@ -401,28 +398,6 @@ function formatDeletionStatus(nodeCount: number, edgeCount: number) {
   }
 
   return `Deleted ${edgeCount} connection${edgeCount === 1 ? "" : "s"}`;
-}
-
-function evaluateEquation(equation: string, a: number, b: number) {
-  const { leftOperator, rightOperator } = parseEquationTokens(equation);
-  const combination = `${leftOperator} ${rightOperator}`;
-
-  switch (combination) {
-    case "+ +":
-      return a + b;
-    case "+ -":
-      return a - b;
-    case "- +":
-      return b - a;
-    case "* *":
-      return a * b;
-    case "* /":
-      return divideSafely(a, b);
-    case "/ *":
-      return divideSafely(b, a);
-    default:
-      return a + b;
-  }
 }
 
 function buildNodeDetail(
@@ -623,86 +598,6 @@ function buildProjectGraphIndex(nodes: CanvasNode[], edges: CanvasEdge[]): Proje
 
 function getIncomingEdge(edges: CanvasEdge[], nodeId: string, handleId: string) {
   return edges.find((edge) => edge.target === nodeId && edge.targetHandle === handleId);
-}
-
-function evaluateSignalGraph(nodes: CanvasNode[], edges: CanvasEdge[], timeSeconds: number) {
-  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
-  const cache = new Map<string, number | null>();
-
-  function readNode(nodeId: string, stack = new Set<string>()): number | null {
-    if (cache.has(nodeId)) {
-      return cache.get(nodeId) ?? null;
-    }
-
-    if (stack.has(nodeId)) {
-      return null;
-    }
-
-    const node = nodeMap.get(nodeId);
-
-    if (!node) {
-      return null;
-    }
-
-    const nextStack = new Set(stack);
-    nextStack.add(nodeId);
-
-    let result: number | null = null;
-
-    switch (node.data.blockType) {
-      case "constant":
-        result = parseNumber(node.data.properties.value, 0);
-        break;
-      case "integrator": {
-        const inputEdge = getIncomingEdge(edges, nodeId, "in");
-        const inputValue = inputEdge ? readNode(inputEdge.source, nextStack) ?? 0 : 0;
-        const initialValue = parseNumber(node.data.properties.initialValue, 0);
-
-        result = initialValue + inputValue * timeSeconds;
-        break;
-      }
-      case "transferFunction": {
-        const inputEdge = getIncomingEdge(edges, nodeId, "in");
-        result = inputEdge ? readNode(inputEdge.source, nextStack) : null;
-        break;
-      }
-      case "squareWave": {
-        const amplitude = parseNumber(node.data.properties.amplitude, 1);
-        const frequency = Math.max(parseNumber(node.data.properties.frequency, 1), 0.001);
-        const duty = Math.min(100, Math.max(0, parseNumber(node.data.properties.duty, 50)));
-        const phase = (timeSeconds * frequency) % 1;
-
-        result = phase < duty / 100 ? amplitude : 0;
-        break;
-      }
-      case "sum": {
-        const edgeA = getIncomingEdge(edges, nodeId, "a");
-        const edgeB = getIncomingEdge(edges, nodeId, "b");
-        const inputA = edgeA ? readNode(edgeA.source, nextStack) ?? 0 : 0;
-        const inputB = edgeB ? readNode(edgeB.source, nextStack) ?? 0 : 0;
-
-        result = evaluateEquation(node.data.properties.equation, inputA, inputB);
-        break;
-      }
-      case "scope":
-      case "display": {
-        const inputEdge = getIncomingEdge(edges, nodeId, "in");
-        result = inputEdge ? readNode(inputEdge.source, nextStack) : null;
-        break;
-      }
-      default:
-        result = null;
-    }
-
-    cache.set(nodeId, result);
-    return result;
-  }
-
-  for (const node of nodes) {
-    readNode(node.id);
-  }
-
-  return cache;
 }
 
 function getNextNodeNumber(nodes: SerializedNode[]) {
@@ -955,6 +850,60 @@ function buildPreviewNodeData(blockType: BlockType): CanvasNodeData {
   };
 }
 
+function buildScopePlotPath(times: number[], values: number[], width: number, height: number) {
+  if (times.length === 0 || values.length === 0) {
+    return "";
+  }
+
+  const maxIndex = Math.min(times.length, values.length) - 1;
+  const minValue = values.reduce((min, value) => Math.min(min, value), values[0] ?? 0);
+  const maxValue = values.reduce((max, value) => Math.max(max, value), values[0] ?? 0);
+  const valueSpan = Math.max(maxValue - minValue, 1e-9);
+
+  return values
+    .slice(0, maxIndex + 1)
+    .map((value, index) => {
+      const x = (index / Math.max(maxIndex, 1)) * width;
+      const normalizedValue = (value - minValue) / valueSpan;
+      const y = height - normalizedValue * height;
+      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
+function buildScopeTickValues(min: number, max: number, count: number) {
+  if (count <= 1 || !Number.isFinite(min) || !Number.isFinite(max)) {
+    return [min];
+  }
+
+  if (Math.abs(max - min) <= 1e-9) {
+    return Array.from({ length: count }, (_, index) => min + index);
+  }
+
+  return Array.from({ length: count }, (_, index) => min + ((max - min) * index) / (count - 1));
+}
+
+function getScopePlotPoint(index: number, times: number[], values: number[], width: number, height: number) {
+  if (index < 0 || index >= times.length || index >= values.length) {
+    return null;
+  }
+
+  const maxIndex = Math.min(times.length, values.length) - 1;
+  const minValue = values.reduce((min, value) => Math.min(min, value), values[0] ?? 0);
+  const maxValue = values.reduce((max, value) => Math.max(max, value), values[0] ?? 0);
+  const valueSpan = Math.max(maxValue - minValue, 1e-9);
+  const x = (index / Math.max(maxIndex, 1)) * width;
+  const normalizedValue = (values[index] - minValue) / valueSpan;
+  const y = height - normalizedValue * height;
+
+  return {
+    x,
+    y,
+    time: times[index],
+    value: values[index],
+  };
+}
+
 type AppErrorBoundaryState = {
   errorMessage: string | null;
 };
@@ -1034,6 +983,9 @@ function ControlRoom() {
   const [activeMenu, setActiveMenu] = useState<"file" | "settings" | null>(null);
   const [isSimulationRunning, setIsSimulationRunning] = useState(false);
   const [timeSeconds, setTimeSeconds] = useState(0);
+  const [simulationTrace, setSimulationTrace] = useState<SimulationTrace | null>(null);
+  const [scopePlotNodeId, setScopePlotNodeId] = useState<string | null>(null);
+  const [inspectedScopeSampleIndex, setInspectedScopeSampleIndex] = useState<number | null>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [zoomStep, setZoomStep] = useState(0.05);
   const [inputErrorMessage, setInputErrorMessage] = useState<string | null>(null);
@@ -1043,7 +995,6 @@ function ControlRoom() {
   const rackDragHandledRef = useRef(false);
   const historyRef = useRef<EditorSnapshot[]>([]);
   const isRestoringHistoryRef = useRef(false);
-  const simulationStartTimeRef = useRef<number | null>(null);
   const nextNodeNumber = useRef(1);
   const fileMenuRef = useRef<HTMLDivElement | null>(null);
   const canvasSurfaceRef = useRef<HTMLDivElement | null>(null);
@@ -1063,24 +1014,6 @@ function ControlRoom() {
   const viewportRef = useRef(defaultViewport);
   const pendingViewportRef = useRef<typeof defaultViewport | null>(defaultViewport);
   const { getViewport, screenToFlowPosition, setViewport } = useReactFlow();
-
-  useEffect(() => {
-    if (!isSimulationRunning) {
-      simulationStartTimeRef.current = null;
-      return;
-    }
-
-    if (simulationStartTimeRef.current === null) {
-      simulationStartTimeRef.current = Date.now() - timeSeconds * 1000;
-    }
-
-    const intervalId = window.setInterval(() => {
-      const startedAt = simulationStartTimeRef.current ?? Date.now();
-      setTimeSeconds((Date.now() - startedAt) / 1000);
-    }, 200);
-
-    return () => window.clearInterval(intervalId);
-  }, [isSimulationRunning]);
 
   useEffect(() => {
     try {
@@ -1120,16 +1053,49 @@ function ControlRoom() {
     };
   }, [activeMenu]);
 
-  const signalValues = useMemo(
-    () => evaluateSignalGraph(nodes as CanvasNode[], edges, timeSeconds),
-    [nodes, edges, timeSeconds],
-  );
+  const signalValues = useMemo(() => {
+    if (!simulationTrace || simulationTrace.times.length === 0) {
+      return new Map<string, number | null>();
+    }
+
+    const sampleIndex = simulationTrace.times.length - 1;
+
+    return new Map<string, number | null>(
+      Object.entries(simulationTrace.valuesByNodeId).map(([nodeId, values]) => [nodeId, values[sampleIndex] ?? null]),
+    );
+  }, [simulationTrace]);
   const signalContextValue = useMemo(
     () => ({ signalValues, edges }),
     [signalValues, edges],
   );
   const inspectorNode = (nodes as CanvasNode[]).find((node) => node.id === inspectorNodeId) ?? null;
   const inspectorLiveData = inspectorNode ? getNodeLiveData(inspectorNode, edges, signalValues) : null;
+  const scopePlotNode = (nodes as CanvasNode[]).find((node) => node.id === scopePlotNodeId) ?? null;
+  const scopePlotTimes = simulationTrace?.times ?? [];
+  const scopePlotValues = scopePlotNodeId
+    ? simulationTrace?.valuesByNodeId[scopePlotNodeId] ?? []
+    : [];
+  const scopePlotPath = useMemo(
+    () => buildScopePlotPath(scopePlotTimes, scopePlotValues, 720, 260),
+    [scopePlotTimes, scopePlotValues],
+  );
+  const scopePlotMin = scopePlotValues.length > 0 ? Math.min(...scopePlotValues) : 0;
+  const scopePlotMax = scopePlotValues.length > 0 ? Math.max(...scopePlotValues) : 0;
+  const scopeTimeTicks = useMemo(
+    () => buildScopeTickValues(scopePlotTimes.at(0) ?? 0, scopePlotTimes.at(-1) ?? 0, 5),
+    [scopePlotTimes],
+  );
+  const scopeValueTicks = useMemo(
+    () => buildScopeTickValues(scopePlotMin, scopePlotMax, 5),
+    [scopePlotMin, scopePlotMax],
+  );
+  const inspectedScopePoint = useMemo(
+    () =>
+      inspectedScopeSampleIndex === null
+        ? null
+        : getScopePlotPoint(inspectedScopeSampleIndex, scopePlotTimes, scopePlotValues, 720, 260),
+    [inspectedScopeSampleIndex, scopePlotTimes, scopePlotValues],
+  );
 
   useEffect(() => {
     if (!pendingViewportRef.current) {
@@ -1214,6 +1180,9 @@ function ControlRoom() {
     setProjectFilePath(snapshot.projectFilePath);
     setIsSimulationRunning(snapshot.isSimulationRunning);
     setTimeSeconds(snapshot.timeSeconds);
+    setSimulationTrace(null);
+    setScopePlotNodeId(null);
+    setInspectedScopeSampleIndex(null);
     setZoomStep(snapshot.zoomStep);
     setZoomLevel(snapshot.zoomLevel);
     pendingViewportRef.current = {
@@ -1261,6 +1230,9 @@ function ControlRoom() {
     nextNodeNumber.current = getNextNodeNumber(nextCanvas.nodes.map(toSerializedNode));
     setIsSimulationRunning(false);
     setTimeSeconds(0);
+    setSimulationTrace(null);
+    setScopePlotNodeId(null);
+    setInspectedScopeSampleIndex(null);
     setZoomStep(0.05);
     setZoomLevel(defaultViewport.zoom);
     viewportRef.current = defaultViewport;
@@ -1287,6 +1259,9 @@ function ControlRoom() {
     setProjectFilePath(null);
     setIsSimulationRunning(false);
     setTimeSeconds(0);
+    setSimulationTrace(null);
+    setScopePlotNodeId(null);
+    setInspectedScopeSampleIndex(null);
     setZoomStep(project.simulation.zoomStep ?? 0.05);
     const restoredZoom = clampZoomLevel(project.simulation.zoom ?? defaultViewport.zoom, project.simulation.zoomStep ?? 0.05);
     const restoredViewport = {
@@ -1491,7 +1466,7 @@ function ControlRoom() {
     setSimulationStatus("Started a new blank project");
   }
 
-  function handleStartSimulation() {
+  async function handleStartSimulation() {
     if (containsDecimalComma(endTime) || containsDecimalComma(stepSize)) {
       showDecimalSeparatorError();
       return;
@@ -1511,14 +1486,47 @@ function ControlRoom() {
     }
 
     if (isSimulationRunning) {
-      setIsSimulationRunning(false);
-      setSimulationStatus("Simulation stopped");
       return;
     }
 
-    setTimeSeconds(0);
-    setIsSimulationRunning(true);
-    setSimulationStatus("Simulation running");
+    try {
+      const hasCommaInProperties = (nodes as CanvasNode[]).some((node) =>
+        node.data.propertyFields.some(
+          (field) => field.inputMode === "decimal" && containsDecimalComma(node.data.properties[field.key]),
+        ),
+      );
+
+      if (hasCommaInProperties) {
+        showDecimalSeparatorError();
+        return;
+      }
+
+      const projectDocument = buildProjectDocument(
+        nodes as CanvasNode[],
+        edges,
+        parsedEndTime,
+        parsedStepSize,
+        zoomStep,
+        viewportRef.current,
+      );
+
+      setSimulationStatus("Simulating project");
+      setIsSimulationRunning(true);
+      const trace = await invoke<SimulationTrace>("simulate_project", {
+        projectJson: JSON.stringify(projectDocument, null, 2),
+      });
+
+      setSimulationTrace(trace);
+      setTimeSeconds(trace.times.at(-1) ?? 0);
+      setSimulationStatus(`Simulation completed (${trace.times.length} samples)`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSimulationTrace(null);
+      setTimeSeconds(0);
+      setSimulationStatus(`Simulation failed: ${message}`);
+    } finally {
+      setIsSimulationRunning(false);
+    }
   }
 
   async function handleCompileProject() {
@@ -2076,7 +2084,7 @@ function ControlRoom() {
             Compile Project
           </button>
           <button type="button" className="simulation-strip__button" onClick={handleStartSimulation}>
-            {isSimulationRunning ? "Stop Simulation" : "Start Simulation"}
+            {isSimulationRunning ? "Simulating..." : "Run Simulation"}
           </button>
 
           <label className="simulation-strip__field">
@@ -2202,6 +2210,12 @@ function ControlRoom() {
               onNodeClick={(_, node) => {
                 setInspectorNodeId(node.id);
                 syncSelection([node.id], []);
+              }}
+              onNodeDoubleClick={(_, node) => {
+                if ((node as CanvasNode).data.blockType === "scope") {
+                  setScopePlotNodeId(node.id);
+                  setInspectedScopeSampleIndex(null);
+                }
               }}
               onEdgeClick={(_, edge) => {
                 setInspectorNodeId(null);
@@ -2337,6 +2351,109 @@ function ControlRoom() {
             document.body,
           )
         : null}
+      {scopePlotNodeId ? (
+        <div className="input-error-modal" role="dialog" aria-modal="true" aria-label="scope plot">
+          <div className="input-error-modal__panel input-error-modal__panel--plot">
+            <div className="scope-plot__header">
+              <div>
+                <strong>{scopePlotNode?.data.label ?? "Scope"}</strong>
+                <p>{scopePlotNode?.data.role ?? scopePlotNodeId}</p>
+              </div>
+              <button type="button" className="simulation-strip__button" onClick={() => setScopePlotNodeId(null)}>
+                Close
+              </button>
+            </div>
+            {simulationTrace && scopePlotValues.length > 0 ? (
+              <>
+                <div className="scope-plot__stats">
+                  <span>Samples: {scopePlotTimes.length}</span>
+                  <span>Time: {scopePlotTimes.at(0) ?? 0}s to {scopePlotTimes.at(-1) ?? 0}s</span>
+                  <span>Min: {scopePlotMin.toFixed(3)}</span>
+                  <span>Max: {scopePlotMax.toFixed(3)}</span>
+                </div>
+                <div className="scope-plot__legend">
+                  <span>X axis: Time (s)</span>
+                  <span>Y axis: Signal value</span>
+                  <span>
+                    Cursor:{" "}
+                    {inspectedScopePoint
+                      ? `t=${inspectedScopePoint.time.toFixed(3)} s, y=${inspectedScopePoint.value.toFixed(6)}`
+                      : "hover over the trace"}
+                  </span>
+                </div>
+                <div className="scope-plot__layout">
+                  <div className="scope-plot__y-axis" aria-hidden="true">
+                    {scopeValueTicks
+                      .slice()
+                      .reverse()
+                      .map((tick) => (
+                        <span key={`y-${tick.toFixed(6)}`}>{tick.toFixed(3)}</span>
+                      ))}
+                  </div>
+                  <div className="scope-plot__chart">
+                    <div className="scope-plot__frame">
+                      <svg
+                        viewBox="0 0 720 260"
+                        className="scope-plot__svg"
+                        preserveAspectRatio="none"
+                        aria-label="scope waveform plot"
+                        onMouseMove={(event) => {
+                          const bounds = event.currentTarget.getBoundingClientRect();
+                          const relativeX = Math.max(0, Math.min(bounds.width, event.clientX - bounds.left));
+                          const ratio = bounds.width > 0 ? relativeX / bounds.width : 0;
+                          const sampleIndex = Math.round(ratio * Math.max(scopePlotValues.length - 1, 0));
+                          setInspectedScopeSampleIndex(sampleIndex);
+                        }}
+                        onMouseLeave={() => setInspectedScopeSampleIndex(null)}
+                      >
+                    <defs>
+                      <pattern id="scope-grid" width="72" height="52" patternUnits="userSpaceOnUse">
+                        <path d="M 72 0 L 0 0 0 52" fill="none" stroke="rgba(147, 176, 142, 0.22)" strokeWidth="1" />
+                      </pattern>
+                    </defs>
+                    <rect x="0" y="0" width="720" height="260" fill="#101713" />
+                    <rect x="0" y="0" width="720" height="260" fill="url(#scope-grid)" />
+                    <line x1="0" y1="130" x2="720" y2="130" stroke="rgba(209, 225, 205, 0.2)" strokeWidth="1" />
+                    {scopePlotPath ? (
+                      <path d={scopePlotPath} fill="none" stroke="#c4f07a" strokeWidth="2.25" strokeLinejoin="round" strokeLinecap="round" />
+                    ) : null}
+                        {inspectedScopePoint ? (
+                          <>
+                            <line
+                              x1={inspectedScopePoint.x}
+                              y1="0"
+                              x2={inspectedScopePoint.x}
+                              y2="260"
+                              stroke="rgba(255, 247, 153, 0.65)"
+                              strokeWidth="1"
+                              strokeDasharray="4 4"
+                            />
+                            <circle
+                              cx={inspectedScopePoint.x}
+                              cy={inspectedScopePoint.y}
+                              r="4.5"
+                              fill="#fff799"
+                              stroke="#1b241b"
+                              strokeWidth="1.5"
+                            />
+                          </>
+                        ) : null}
+                      </svg>
+                    </div>
+                    <div className="scope-plot__x-axis" aria-hidden="true">
+                      {scopeTimeTicks.map((tick) => (
+                        <span key={`x-${tick.toFixed(6)}`}>{tick.toFixed(3)} s</span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <p>No simulation trace available for this scope yet. Run the simulation first.</p>
+            )}
+          </div>
+        </div>
+      ) : null}
       {inputErrorMessage ? (
         <div className="input-error-modal" role="dialog" aria-modal="true" aria-label="invalid number format">
           <div className="input-error-modal__panel">
