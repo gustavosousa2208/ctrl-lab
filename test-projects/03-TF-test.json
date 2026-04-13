@@ -1,0 +1,305 @@
+{
+  "version": 1,
+  "kind": "ctrl-lab-project",
+  "generatedAt": "2026-04-12T13:58:32.890Z",
+  "title": "",
+  "simulation": {
+    "endTime": 10,
+    "stepSize": 0.1,
+    "zoomStep": 0.05,
+    "zoom": 0.55,
+    "viewportX": 419,
+    "viewportY": 128
+  },
+  "nodes": [
+    {
+      "id": "transferFunction-1",
+      "type": "transferFunction",
+      "label": "Transfer Function",
+      "role": "tf-01",
+      "position": {
+        "x": 432,
+        "y": 192
+      },
+      "properties": {
+        "numerator": "1.0",
+        "denominator": "1.0 1.0",
+        "stateName": "x",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "constant-2",
+      "type": "constant",
+      "label": "Constant",
+      "role": "const-01",
+      "position": {
+        "x": -144,
+        "y": 96
+      },
+      "properties": {
+        "value": "1.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "sum-3",
+      "type": "sum",
+      "label": "Summing Node",
+      "role": "sum-01",
+      "position": {
+        "x": 696,
+        "y": 192
+      },
+      "properties": {
+        "equation": "+ +",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "constant-4",
+      "type": "constant",
+      "label": "Constant",
+      "role": "const-02",
+      "position": {
+        "x": 432,
+        "y": 336
+      },
+      "properties": {
+        "value": "1.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "scope-5",
+      "type": "scope",
+      "label": "Scope",
+      "role": "scope-01",
+      "position": {
+        "x": 936,
+        "y": 192
+      },
+      "properties": {
+        "channel": "CH-1",
+        "timebase": "1 s/div",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "switch-6",
+      "type": "switch",
+      "label": "Switch",
+      "role": "sw-01",
+      "position": {
+        "x": 120,
+        "y": 192
+      },
+      "properties": {
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "constant-7",
+      "type": "constant",
+      "label": "Constant",
+      "role": "const-03",
+      "position": {
+        "x": -144,
+        "y": 288
+      },
+      "properties": {
+        "value": "-1",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "step-8",
+      "type": "step",
+      "label": "Step",
+      "role": "step-01",
+      "position": {
+        "x": -360,
+        "y": 192
+      },
+      "properties": {
+        "initialValue": "0.0",
+        "finalValue": "1.0",
+        "stepTime": "5",
+        "dataType": "f32"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "xy-edge__transferFunction-1out-sum-3a",
+      "sourceNodeId": "transferFunction-1",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-3",
+      "targetPortId": "a"
+    },
+    {
+      "id": "xy-edge__constant-4out-sum-3b",
+      "sourceNodeId": "constant-4",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-3",
+      "targetPortId": "b"
+    },
+    {
+      "id": "xy-edge__sum-3out-scope-5in",
+      "sourceNodeId": "sum-3",
+      "sourcePortId": "out",
+      "targetNodeId": "scope-5",
+      "targetPortId": "in"
+    },
+    {
+      "id": "xy-edge__constant-2out-switch-6a",
+      "sourceNodeId": "constant-2",
+      "sourcePortId": "out",
+      "targetNodeId": "switch-6",
+      "targetPortId": "a"
+    },
+    {
+      "id": "xy-edge__switch-6out-transferFunction-1in",
+      "sourceNodeId": "switch-6",
+      "sourcePortId": "out",
+      "targetNodeId": "transferFunction-1",
+      "targetPortId": "in"
+    },
+    {
+      "id": "xy-edge__step-8out-switch-6sel",
+      "sourceNodeId": "step-8",
+      "sourcePortId": "out",
+      "targetNodeId": "switch-6",
+      "targetPortId": "sel"
+    },
+    {
+      "id": "xy-edge__constant-7out-switch-6b",
+      "sourceNodeId": "constant-7",
+      "sourcePortId": "out",
+      "targetNodeId": "switch-6",
+      "targetPortId": "b"
+    }
+  ],
+  "graphIndex": {
+    "nodesById": {
+      "transferFunction-1": {
+        "type": "transferFunction",
+        "role": "tf-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "constant-2": {
+        "type": "constant",
+        "role": "const-01",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "sum-3": {
+        "type": "sum",
+        "role": "sum-01",
+        "inputPortIds": [
+          "a",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "constant-4": {
+        "type": "constant",
+        "role": "const-02",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "scope-5": {
+        "type": "scope",
+        "role": "scope-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": []
+      },
+      "switch-6": {
+        "type": "switch",
+        "role": "sw-01",
+        "inputPortIds": [
+          "a",
+          "sel",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "constant-7": {
+        "type": "constant",
+        "role": "const-03",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "step-8": {
+        "type": "step",
+        "role": "step-01",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      }
+    },
+    "incomingEdgesByNodeId": {
+      "transferFunction-1": [
+        "xy-edge__switch-6out-transferFunction-1in"
+      ],
+      "constant-2": [],
+      "sum-3": [
+        "xy-edge__transferFunction-1out-sum-3a",
+        "xy-edge__constant-4out-sum-3b"
+      ],
+      "constant-4": [],
+      "scope-5": [
+        "xy-edge__sum-3out-scope-5in"
+      ],
+      "switch-6": [
+        "xy-edge__constant-2out-switch-6a",
+        "xy-edge__step-8out-switch-6sel",
+        "xy-edge__constant-7out-switch-6b"
+      ],
+      "constant-7": [],
+      "step-8": []
+    },
+    "outgoingEdgesByNodeId": {
+      "transferFunction-1": [
+        "xy-edge__transferFunction-1out-sum-3a"
+      ],
+      "constant-2": [
+        "xy-edge__constant-2out-switch-6a"
+      ],
+      "sum-3": [
+        "xy-edge__sum-3out-scope-5in"
+      ],
+      "constant-4": [
+        "xy-edge__constant-4out-sum-3b"
+      ],
+      "scope-5": [],
+      "switch-6": [
+        "xy-edge__switch-6out-transferFunction-1in"
+      ],
+      "constant-7": [
+        "xy-edge__constant-7out-switch-6b"
+      ],
+      "step-8": [
+        "xy-edge__step-8out-switch-6sel"
+      ]
+    }
+  }
+}

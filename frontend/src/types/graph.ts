@@ -3,8 +3,12 @@ export type NodeId = string;
 
 export type BlockType =
   | "constant"
+  | "step"
+  | "delay"
+  | "gain"
   | "integrator"
   | "transferFunction"
+  | "switch"
   | "sum"
   | "display"
   | "scope"
@@ -17,6 +21,7 @@ export interface BlockNode<TParams = Record<string, unknown>> {
     x: number;
     y: number;
   };
+  rotation?: number;
   params?: TParams;
 }
 

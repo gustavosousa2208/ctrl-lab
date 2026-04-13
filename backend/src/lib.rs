@@ -81,6 +81,7 @@ pub struct ValidatedDag {
     pub metadata: ProjectMetadata,
     pub nodes: HashMap<NodeId, SerializedNode>,
     pub nodes_by_id: HashMap<NodeId, IndexedNode>,
+    pub block_behaviors: HashMap<NodeId, BlockBehavior>,
     pub edges: Vec<SerializedEdge>,
     pub topological_order: Vec<NodeId>,
 }
@@ -100,7 +101,13 @@ pub struct SimulationOutput {
     pub values_by_node_id: HashMap<NodeId, Vec<f64>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockBehavior {
+    pub is_stateful: bool,
+    pub is_direct_feedthrough: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum SimulationError {
     Parse {
         message: String,
@@ -132,6 +139,22 @@ pub enum SimulationError {
     },
     InvalidTransferFunctionDenominator {
         node_id: NodeId,
+    },
+    InvalidDelayTime {
+        node_id: NodeId,
+        delay_time: f64,
+    },
+    InvalidSquareWaveFrequency {
+        node_id: NodeId,
+        frequency: f64,
+    },
+    InvalidSquareWaveDuty {
+        node_id: NodeId,
+        duty: f64,
+    },
+    InvalidSwitchSelector {
+        node_id: NodeId,
+        value: f64,
     },
     UnsupportedNodeType {
         node_id: NodeId,
@@ -198,7 +221,7 @@ pub enum ParseError {
         port_id: PortId,
         edge_ids: Vec<EdgeId>,
     },
-    CycleDetected,
+    AlgebraicLoopDetected,
 }
 
 impl fmt::Display for ParseError {
@@ -288,7 +311,7 @@ impl fmt::Display for ParseError {
                 "input port `{port_id}` on node `{node_id}` has multiple incoming edges {:?}",
                 edge_ids
             ),
-            Self::CycleDetected => write!(f, "graph is not a DAG"),
+            Self::AlgebraicLoopDetected => write!(f, "graph contains an algebraic loop"),
         }
     }
 }
@@ -345,6 +368,30 @@ impl fmt::Display for SimulationError {
                 write!(
                     f,
                     "node `{node_id}` has an invalid transfer function denominator leading coefficient"
+                )
+            }
+            Self::InvalidDelayTime { node_id, delay_time } => {
+                write!(
+                    f,
+                    "node `{node_id}` has invalid delay time `{delay_time}`; expected -1 for global step size or a non-negative value"
+                )
+            }
+            Self::InvalidSquareWaveFrequency { node_id, frequency } => {
+                write!(
+                    f,
+                    "node `{node_id}` has invalid square wave frequency `{frequency}`; expected a positive value"
+                )
+            }
+            Self::InvalidSquareWaveDuty { node_id, duty } => {
+                write!(
+                    f,
+                    "node `{node_id}` has invalid square wave duty `{duty}`; expected a value between 0 and 100"
+                )
+            }
+            Self::InvalidSwitchSelector { node_id, value } => {
+                write!(
+                    f,
+                    "node `{node_id}` received invalid switch selector value `{value}`; expected 0 or 1"
                 )
             }
             Self::UnsupportedNodeType { node_id, node_type } => {
@@ -420,13 +467,18 @@ pub fn parse_project(document: ProjectDocument) -> Result<ValidatedDag, ParseErr
         .cloned()
         .map(|node_id| (node_id, Vec::new()))
         .collect();
+    let block_behaviors: HashMap<NodeId, BlockBehavior> = document
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), infer_block_behavior(node)))
+        .collect();
     let mut incoming_edges_per_port: HashMap<(NodeId, PortId), Vec<EdgeId>> = HashMap::new();
-    let mut adjacency: HashMap<NodeId, Vec<NodeId>> = node_order
+    let mut dependency_adjacency: HashMap<NodeId, BTreeSet<NodeId>> = node_order
         .iter()
         .cloned()
-        .map(|node_id| (node_id, Vec::new()))
+        .map(|node_id| (node_id, BTreeSet::new()))
         .collect();
-    let mut indegree: HashMap<NodeId, usize> = node_order
+    let mut dependency_indegree: HashMap<NodeId, usize> = node_order
         .iter()
         .cloned()
         .map(|node_id| (node_id, 0usize))
@@ -476,13 +528,22 @@ pub fn parse_project(document: ProjectDocument) -> Result<ValidatedDag, ParseErr
             .entry((edge.target_node_id.clone(), edge.target_port_id.clone()))
             .or_default()
             .push(edge.id.clone());
-        adjacency
-            .get_mut(&edge.source_node_id)
-            .expect("validated node ids must exist")
-            .push(edge.target_node_id.clone());
-        *indegree
-            .get_mut(&edge.target_node_id)
-            .expect("validated node ids must exist") += 1;
+        if block_behaviors
+            .get(&edge.target_node_id)
+            .copied()
+            .unwrap_or_else(|| block_behavior(&target_index.node_type))
+            .is_direct_feedthrough
+        {
+            let inserted = dependency_adjacency
+                .get_mut(&edge.source_node_id)
+                .expect("validated node ids must exist")
+                .insert(edge.target_node_id.clone());
+            if inserted {
+                *dependency_indegree
+                    .get_mut(&edge.target_node_id)
+                    .expect("validated node ids must exist") += 1;
+            }
+        }
     }
 
     for node_id in &node_order {
@@ -548,41 +609,46 @@ pub fn parse_project(document: ProjectDocument) -> Result<ValidatedDag, ParseErr
         .enumerate()
         .map(|(index, node_id)| (node_id, index))
         .collect();
-    for targets in adjacency.values_mut() {
-        targets.sort_by_key(|node_id| {
+
+    let mut queue = Vec::new();
+    for node_id in &node_order {
+        if dependency_indegree
+            .get(node_id)
+            .copied()
+            .unwrap_or_default()
+            == 0
+        {
+            queue.push(node_id.clone());
+        }
+    }
+
+    let mut topological_order = Vec::with_capacity(node_order.len());
+    while !queue.is_empty() {
+        let node_id = queue.remove(0);
+        topological_order.push(node_id.clone());
+
+        if let Some(targets) = dependency_adjacency.get(&node_id) {
+            for target_id in targets {
+                let count = dependency_indegree
+                    .get_mut(target_id)
+                    .expect("validated node ids must exist");
+                *count -= 1;
+                if *count == 0 {
+                    queue.push(target_id.clone());
+                }
+            }
+        }
+
+        queue.sort_by_key(|queued_node_id| {
             order_index
-                .get(node_id)
+                .get(queued_node_id)
                 .copied()
                 .expect("validated node ids must exist")
         });
     }
 
-    let mut queue = VecDeque::new();
-    for node_id in &node_order {
-        if indegree.get(node_id).copied().unwrap_or_default() == 0 {
-            queue.push_back(node_id.clone());
-        }
-    }
-
-    let mut topological_order = Vec::with_capacity(node_order.len());
-    while let Some(node_id) = queue.pop_front() {
-        topological_order.push(node_id.clone());
-
-        if let Some(targets) = adjacency.get(&node_id) {
-            for target_id in targets {
-                let count = indegree
-                    .get_mut(target_id)
-                    .expect("validated node ids must exist");
-                *count -= 1;
-                if *count == 0 {
-                    queue.push_back(target_id.clone());
-                }
-            }
-        }
-    }
-
     if topological_order.len() != node_order.len() {
-        return Err(ParseError::CycleDetected);
+        return Err(ParseError::AlgebraicLoopDetected);
     }
 
     Ok(ValidatedDag {
@@ -599,6 +665,7 @@ pub fn parse_project(document: ProjectDocument) -> Result<ValidatedDag, ParseErr
             .map(|node| (node.id.clone(), node))
             .collect(),
         nodes_by_id: graph_index.nodes_by_id,
+        block_behaviors,
         edges: document.edges,
         topological_order,
     })
@@ -637,7 +704,9 @@ pub fn simulate_validated_dag(dag: &ValidatedDag) -> Result<SimulationOutput, Si
         .collect();
 
     let mut integrator_state: HashMap<NodeId, f64> = HashMap::new();
-    let mut transfer_function_state: HashMap<NodeId, f64> = HashMap::new();
+    let mut delay_state: HashMap<NodeId, DelayState> = HashMap::new();
+    let mut transfer_function_models: HashMap<NodeId, TransferFunctionModel> = HashMap::new();
+    let mut transfer_function_state: HashMap<NodeId, TransferFunctionState> = HashMap::new();
     for node_id in &dag.topological_order {
         let node = dag
             .nodes
@@ -654,8 +723,14 @@ pub fn simulate_validated_dag(dag: &ValidatedDag) -> Result<SimulationOutput, Si
                 })?;
             integrator_state.insert(node.id.clone(), initial_value);
         }
+        if node.node_type == "delay" {
+            delay_state.insert(node.id.clone(), initialize_delay_state(node, step_size)?);
+        }
         if node.node_type == "transferFunction" {
-            transfer_function_state.insert(node.id.clone(), 0.0);
+            let model = parse_transfer_function(node)?;
+            transfer_function_models.insert(node.id.clone(), model.clone());
+            transfer_function_state
+                .insert(node.id.clone(), TransferFunctionState::from_model(&model));
         }
     }
 
@@ -677,12 +752,80 @@ pub fn simulate_validated_dag(dag: &ValidatedDag) -> Result<SimulationOutput, Si
                         value,
                     }
                 })?,
+                "step" => evaluate_step(node, times[step_index]).map_err(|(property, value)| {
+                    SimulationError::InvalidNumericProperty {
+                        node_id: node.id.clone(),
+                        property,
+                        value,
+                    }
+                })?,
+                "delay" => {
+                    let state = delay_state
+                        .get(node_id)
+                        .expect("delay state must exist after initialization");
+                    if state.delay_steps == 0 {
+                        read_input_value(&current_values, &incoming_edges_by_port, node_id, "in")?
+                    } else {
+                        state
+                            .buffered_values
+                            .front()
+                            .copied()
+                            .unwrap_or(state.initial_value)
+                    }
+                }
+                "gain" => {
+                    let input =
+                        read_input_value(&current_values, &incoming_edges_by_port, node_id, "in")?;
+                    let gain = parse_numeric_property(node, "gain", 1.0).map_err(|value| {
+                        SimulationError::InvalidNumericProperty {
+                            node_id: node.id.clone(),
+                            property: "gain".to_string(),
+                            value,
+                        }
+                    })?;
+                    input * gain
+                }
                 "integrator" => *integrator_state
                     .get(node_id)
                     .expect("integrator state must exist after initialization"),
-                "transferFunction" => *transfer_function_state
+                "transferFunction" => transfer_function_state
                     .get(node_id)
-                    .expect("transfer function state must exist after initialization"),
+                    .map(|state| {
+                        let model = transfer_function_models
+                            .get(node_id)
+                            .expect("transfer function model must exist");
+                        let input = if model.output_requires_input() {
+                            read_input_value(
+                                &current_values,
+                                &incoming_edges_by_port,
+                                node_id,
+                                "in",
+                            )?
+                        } else {
+                            0.0
+                        };
+                        Ok(model.output(state, input))
+                    })
+                    .expect("transfer function state must exist after initialization")?,
+                "switch" => {
+                    let input_a =
+                        read_input_value(&current_values, &incoming_edges_by_port, node_id, "a")?;
+                    let input_b =
+                        read_input_value(&current_values, &incoming_edges_by_port, node_id, "b")?;
+                    let selector =
+                        read_input_value(&current_values, &incoming_edges_by_port, node_id, "sel")?;
+                    if selector.abs() <= f64::EPSILON {
+                        input_a
+                    } else if (selector - 1.0).abs() <= f64::EPSILON {
+                        input_b
+                    } else {
+                        return Err(SimulationError::InvalidSwitchSelector {
+                            node_id: node.id.clone(),
+                            value: selector,
+                        });
+                    }
+                }
+                "squareWave" => evaluate_square_wave(node, times[step_index])?,
                 "sum" => {
                     let input_a =
                         read_input_value(&current_values, &incoming_edges_by_port, node_id, "a")?;
@@ -713,6 +856,10 @@ pub fn simulate_validated_dag(dag: &ValidatedDag) -> Result<SimulationOutput, Si
         }
 
         if step_index + 1 < times.len() {
+            let mut next_integrator_state = integrator_state.clone();
+            let mut next_delay_state = delay_state.clone();
+            let mut next_transfer_function_state = transfer_function_state.clone();
+
             for node_id in &dag.topological_order {
                 let node = dag
                     .nodes
@@ -721,23 +868,42 @@ pub fn simulate_validated_dag(dag: &ValidatedDag) -> Result<SimulationOutput, Si
                 if node.node_type == "integrator" {
                     let input =
                         read_input_value(&current_values, &incoming_edges_by_port, node_id, "in")?;
-                    let state = integrator_state
+                    let state = next_integrator_state
                         .get_mut(node_id)
                         .expect("integrator state must exist");
                     *state += input * step_size;
                 }
+                if node.node_type == "delay" {
+                    let input =
+                        read_input_value(&current_values, &incoming_edges_by_port, node_id, "in")?;
+                    let state = next_delay_state
+                        .get_mut(node_id)
+                        .expect("delay state must exist");
+                    if state.delay_steps > 0 {
+                        let _ = state.buffered_values.pop_front();
+                        state.buffered_values.push_back(input);
+                    }
+                }
                 if node.node_type == "transferFunction" {
                     let input =
                         read_input_value(&current_values, &incoming_edges_by_port, node_id, "in")?;
-                    let state = transfer_function_state
-                        .get_mut(node_id)
+                    let current_state = transfer_function_state
+                        .get(node_id)
+                        .cloned()
                         .expect("transfer function state must exist");
-                    let params = parse_transfer_function(node)?;
-                    *state += step_size
-                        * ((params.numerator_gain * input - params.output_gain * *state)
-                            / params.derivative_gain);
+                    let model = transfer_function_models
+                        .get(node_id)
+                        .expect("transfer function model must exist");
+                    next_transfer_function_state.insert(
+                        node_id.clone(),
+                        model.next_state(&current_state, input, step_size),
+                    );
                 }
             }
+
+            integrator_state = next_integrator_state;
+            delay_state = next_delay_state;
+            transfer_function_state = next_transfer_function_state;
         }
     }
 
@@ -784,6 +950,67 @@ fn read_input_value(
         })
 }
 
+fn block_behavior(node_type: &str) -> BlockBehavior {
+    match node_type {
+        "integrator" | "delay" => BlockBehavior {
+            is_stateful: true,
+            is_direct_feedthrough: false,
+        },
+        "constant" | "step" | "squareWave" => BlockBehavior {
+            is_stateful: false,
+            is_direct_feedthrough: false,
+        },
+        "gain" | "sum" | "switch" | "scope" | "display" => BlockBehavior {
+            is_stateful: false,
+            is_direct_feedthrough: true,
+        },
+        _ => BlockBehavior {
+            is_stateful: false,
+            is_direct_feedthrough: true,
+        },
+    }
+}
+
+fn infer_block_behavior(node: &SerializedNode) -> BlockBehavior {
+    if node.node_type != "transferFunction" {
+        return block_behavior(&node.node_type);
+    }
+
+    match inspect_transfer_function_orders(node) {
+        Some((numerator_len, denominator_len)) => BlockBehavior {
+            is_stateful: true,
+            is_direct_feedthrough: numerator_len >= denominator_len,
+        },
+        None => BlockBehavior {
+            is_stateful: true,
+            is_direct_feedthrough: true,
+        },
+    }
+}
+
+fn inspect_transfer_function_orders(node: &SerializedNode) -> Option<(usize, usize)> {
+    let numerator = parse_numeric_list_property_for_behavior(node.properties.get("numerator")?)?;
+    let denominator =
+        parse_numeric_list_property_for_behavior(node.properties.get("denominator")?)?;
+    Some((numerator.len(), denominator.len()))
+}
+
+fn parse_numeric_list_property_for_behavior(raw_value: &str) -> Option<Vec<f64>> {
+    let mut values = Vec::new();
+    for token in raw_value
+        .split(|character: char| character.is_whitespace() || character == ',')
+        .filter(|token| !token.is_empty())
+    {
+        values.push(token.parse::<f64>().ok()?);
+    }
+
+    if values.is_empty() {
+        None
+    } else {
+        Some(values)
+    }
+}
+
 fn parse_numeric_property(
     node: &SerializedNode,
     property: &str,
@@ -796,39 +1023,306 @@ fn parse_numeric_property(
     value.trim().parse::<f64>().map_err(|_| value.clone())
 }
 
-#[derive(Debug, Clone, Copy)]
+fn evaluate_step(node: &SerializedNode, time: f64) -> Result<f64, (String, String)> {
+    let initial_value = parse_numeric_property(node, "initialValue", 0.0)
+        .map_err(|value| ("initialValue".to_string(), value))?;
+    let final_value = parse_numeric_property(node, "finalValue", 1.0)
+        .map_err(|value| ("finalValue".to_string(), value))?;
+    let step_time = parse_numeric_property(node, "stepTime", 0.0)
+        .map_err(|value| ("stepTime".to_string(), value))?;
+
+    if time < step_time {
+        Ok(initial_value)
+    } else {
+        Ok(final_value)
+    }
+}
+
+fn evaluate_square_wave(node: &SerializedNode, time: f64) -> Result<f64, SimulationError> {
+    let amplitude = parse_numeric_property(node, "amplitude", 1.0).map_err(|value| {
+        SimulationError::InvalidNumericProperty {
+            node_id: node.id.clone(),
+            property: "amplitude".to_string(),
+            value,
+        }
+    })?;
+    let frequency = parse_numeric_property(node, "frequency", 1.0).map_err(|value| {
+        SimulationError::InvalidNumericProperty {
+            node_id: node.id.clone(),
+            property: "frequency".to_string(),
+            value,
+        }
+    })?;
+    let duty = parse_numeric_property(node, "duty", 50.0).map_err(|value| {
+        SimulationError::InvalidNumericProperty {
+            node_id: node.id.clone(),
+            property: "duty".to_string(),
+            value,
+        }
+    })?;
+
+    if !frequency.is_finite() || frequency <= 0.0 {
+        return Err(SimulationError::InvalidSquareWaveFrequency {
+            node_id: node.id.clone(),
+            frequency,
+        });
+    }
+
+    if !duty.is_finite() || !(0.0..=100.0).contains(&duty) {
+        return Err(SimulationError::InvalidSquareWaveDuty {
+            node_id: node.id.clone(),
+            duty,
+        });
+    }
+
+    if duty <= f64::EPSILON {
+        return Ok(0.0);
+    }
+    if (100.0 - duty).abs() <= f64::EPSILON {
+        return Ok(amplitude);
+    }
+
+    let period = 1.0 / frequency;
+    let high_duration = period * (duty / 100.0);
+    let phase_time = time.rem_euclid(period);
+
+    if phase_time < high_duration {
+        Ok(amplitude)
+    } else {
+        Ok(0.0)
+    }
+}
+
+fn initialize_delay_state(
+    node: &SerializedNode,
+    step_size: f64,
+) -> Result<DelayState, SimulationError> {
+    let initial_value = parse_numeric_property(node, "initialValue", 0.0).map_err(|value| {
+        SimulationError::InvalidNumericProperty {
+            node_id: node.id.clone(),
+            property: "initialValue".to_string(),
+            value,
+        }
+    })?;
+    let delay_time = parse_numeric_property(node, "delayTime", step_size).map_err(|value| {
+        SimulationError::InvalidNumericProperty {
+            node_id: node.id.clone(),
+            property: "delayTime".to_string(),
+            value,
+        }
+    })?;
+
+    let resolved_delay_time = if (delay_time + 1.0).abs() <= f64::EPSILON {
+        step_size
+    } else {
+        delay_time
+    };
+
+    if resolved_delay_time < 0.0 {
+        return Err(SimulationError::InvalidDelayTime {
+            node_id: node.id.clone(),
+            delay_time,
+        });
+    }
+
+    let delay_steps = if resolved_delay_time <= f64::EPSILON {
+        0
+    } else {
+        (resolved_delay_time / step_size).round() as usize
+    };
+
+    Ok(DelayState {
+        initial_value,
+        delay_steps,
+        buffered_values: std::iter::repeat_n(initial_value, delay_steps).collect(),
+    })
+}
+
+#[derive(Debug, Clone)]
+enum TransferFunctionModel {
+    FirstOrder(FirstOrderTransferFunction),
+    SecondOrder(SecondOrderTransferFunction),
+}
+
+impl TransferFunctionModel {
+    fn output_requires_input(&self) -> bool {
+        match self {
+            Self::FirstOrder(model) => model.direct_gain.abs() > f64::EPSILON,
+            Self::SecondOrder(_) => false,
+        }
+    }
+
+    fn output(&self, state: &TransferFunctionState, input: f64) -> f64 {
+        match (self, state) {
+            (Self::FirstOrder(model), TransferFunctionState::FirstOrder { output }) => {
+                model.direct_gain * input + *output
+            }
+            (
+                Self::SecondOrder(model),
+                TransferFunctionState::SecondOrder { position, velocity },
+            ) => model.output_position_gain * *position + model.output_velocity_gain * *velocity,
+            _ => unreachable!("transfer function model and state must match"),
+        }
+    }
+
+    fn next_state(
+        &self,
+        current_state: &TransferFunctionState,
+        input: f64,
+        step_size: f64,
+    ) -> TransferFunctionState {
+        match (self, current_state) {
+            (Self::FirstOrder(model), TransferFunctionState::FirstOrder { output }) => {
+                TransferFunctionState::FirstOrder {
+                    output: *output
+                        + step_size
+                            * ((model.dynamic_numerator_gain * input
+                                - model.output_gain * *output)
+                                / model.derivative_gain),
+                }
+            }
+            (
+                Self::SecondOrder(model),
+                TransferFunctionState::SecondOrder { position, velocity },
+            ) => {
+                let position_dot = *velocity;
+                let velocity_dot =
+                    (-model.position_gain * *position - model.velocity_gain * *velocity + input)
+                        / model.acceleration_gain;
+
+                TransferFunctionState::SecondOrder {
+                    position: *position + step_size * position_dot,
+                    velocity: *velocity + step_size * velocity_dot,
+                }
+            }
+            _ => unreachable!("transfer function model and state must match"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum TransferFunctionState {
+    FirstOrder { output: f64 },
+    SecondOrder { position: f64, velocity: f64 },
+}
+
+impl TransferFunctionState {
+    fn from_model(model: &TransferFunctionModel) -> Self {
+        match model {
+            TransferFunctionModel::FirstOrder(_) => Self::FirstOrder { output: 0.0 },
+            TransferFunctionModel::SecondOrder(_) => Self::SecondOrder {
+                position: 0.0,
+                velocity: 0.0,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct FirstOrderTransferFunction {
     derivative_gain: f64,
     output_gain: f64,
-    numerator_gain: f64,
+    dynamic_numerator_gain: f64,
+    direct_gain: f64,
+}
+
+#[derive(Debug, Clone)]
+struct SecondOrderTransferFunction {
+    acceleration_gain: f64,
+    velocity_gain: f64,
+    position_gain: f64,
+    output_position_gain: f64,
+    output_velocity_gain: f64,
+}
+
+#[derive(Debug, Clone)]
+struct DelayState {
+    initial_value: f64,
+    delay_steps: usize,
+    buffered_values: VecDeque<f64>,
 }
 
 fn parse_transfer_function(
     node: &SerializedNode,
-) -> Result<FirstOrderTransferFunction, SimulationError> {
+) -> Result<TransferFunctionModel, SimulationError> {
     let numerator = parse_numeric_list_property(node, "numerator")?;
     let denominator = parse_numeric_list_property(node, "denominator")?;
 
-    if numerator.len() != 1 || denominator.len() != 2 {
-        return Err(SimulationError::UnsupportedTransferFunctionShape {
+    match (numerator.len(), denominator.len()) {
+        (1, 2) => {
+            let derivative_gain = denominator[0];
+            if !derivative_gain.is_finite() || derivative_gain.abs() <= f64::EPSILON {
+                return Err(SimulationError::InvalidTransferFunctionDenominator {
+                    node_id: node.id.clone(),
+                });
+            }
+
+            Ok(TransferFunctionModel::FirstOrder(
+                FirstOrderTransferFunction {
+                    derivative_gain,
+                    output_gain: denominator[1],
+                    dynamic_numerator_gain: numerator[0],
+                    direct_gain: 0.0,
+                },
+            ))
+        }
+        (2, 2) => {
+            let derivative_gain = denominator[0];
+            if !derivative_gain.is_finite() || derivative_gain.abs() <= f64::EPSILON {
+                return Err(SimulationError::InvalidTransferFunctionDenominator {
+                    node_id: node.id.clone(),
+                });
+            }
+
+            let direct_gain = numerator[0] / derivative_gain;
+            let dynamic_numerator_gain = numerator[1] - denominator[1] * direct_gain;
+
+            Ok(TransferFunctionModel::FirstOrder(
+                FirstOrderTransferFunction {
+                    derivative_gain,
+                    output_gain: denominator[1],
+                    dynamic_numerator_gain,
+                    direct_gain,
+                },
+            ))
+        }
+        (1 | 2, 3) => {
+            let acceleration_gain = denominator[0];
+            if !acceleration_gain.is_finite() || acceleration_gain.abs() <= f64::EPSILON {
+                return Err(SimulationError::InvalidTransferFunctionDenominator {
+                    node_id: node.id.clone(),
+                });
+            }
+
+            let velocity_gain = denominator[1];
+            let position_gain = denominator[2];
+            let output_velocity_gain = if numerator.len() == 2 {
+                numerator[0] / acceleration_gain
+            } else {
+                0.0
+            };
+            let output_position_gain = if numerator.len() == 2 {
+                numerator[1] / acceleration_gain
+            } else {
+                numerator[0] / acceleration_gain
+            };
+
+            Ok(TransferFunctionModel::SecondOrder(
+                SecondOrderTransferFunction {
+                    acceleration_gain,
+                    velocity_gain,
+                    position_gain,
+                    output_position_gain,
+                    output_velocity_gain,
+                },
+            ))
+        }
+        _ => Err(SimulationError::UnsupportedTransferFunctionShape {
             node_id: node.id.clone(),
             numerator_len: numerator.len(),
             denominator_len: denominator.len(),
-        });
+        }),
     }
-
-    let derivative_gain = denominator[0];
-    if !derivative_gain.is_finite() || derivative_gain.abs() <= f64::EPSILON {
-        return Err(SimulationError::InvalidTransferFunctionDenominator {
-            node_id: node.id.clone(),
-        });
-    }
-
-    Ok(FirstOrderTransferFunction {
-        derivative_gain,
-        output_gain: denominator[1],
-        numerator_gain: numerator[0],
-    })
 }
 
 fn parse_numeric_list_property(
@@ -909,8 +1403,19 @@ mod tests {
             .join("01-double-integrator.json")
     }
 
+    fn second_order_system_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("test-projects")
+            .join("04-2nd-order-system.json")
+    }
+
     fn fixture_json() -> String {
         std::fs::read_to_string(fixture_path()).expect("fixture must be readable")
+    }
+
+    fn second_order_system_fixture_json() -> String {
+        std::fs::read_to_string(second_order_system_fixture_path()).expect("fixture must be readable")
     }
 
     fn fixture_value() -> Value {
@@ -1017,6 +1522,917 @@ mod tests {
         })
     }
 
+    fn second_order_transfer_function_fixture_value() -> Value {
+        json!({
+            "version": 1,
+            "kind": "ctrl-lab-project",
+            "generatedAt": "2026-04-12T00:00:00.000Z",
+            "title": "second-order-transfer-function",
+            "simulation": {
+                "endTime": 1.0,
+                "stepSize": 0.1
+            },
+            "nodes": [
+                {
+                    "id": "constant-1",
+                    "type": "constant",
+                    "label": "Constant",
+                    "role": "const-01",
+                    "position": { "x": 0, "y": 0 },
+                    "properties": { "value": "1.0", "dataType": "f32" }
+                },
+                {
+                    "id": "transferFunction-2",
+                    "type": "transferFunction",
+                    "label": "Transfer Function",
+                    "role": "tf-01",
+                    "position": { "x": 160, "y": 0 },
+                    "properties": {
+                        "numerator": "1.0",
+                        "denominator": "1.0 1.0 1.0",
+                        "stateName": "x",
+                        "dataType": "f32"
+                    }
+                },
+                {
+                    "id": "scope-3",
+                    "type": "scope",
+                    "label": "Scope",
+                    "role": "scope-01",
+                    "position": { "x": 320, "y": 0 },
+                    "properties": {
+                        "channel": "CH-1",
+                        "timebase": "1 s/div",
+                        "dataType": "f32"
+                    }
+                }
+            ],
+            "edges": [
+                {
+                    "id": "edge-constant-to-tf",
+                    "sourceNodeId": "constant-1",
+                    "sourcePortId": "out",
+                    "targetNodeId": "transferFunction-2",
+                    "targetPortId": "in"
+                },
+                {
+                    "id": "edge-tf-to-scope",
+                    "sourceNodeId": "transferFunction-2",
+                    "sourcePortId": "out",
+                    "targetNodeId": "scope-3",
+                    "targetPortId": "in"
+                }
+            ],
+            "graphIndex": {
+                "nodesById": {
+                    "constant-1": {
+                        "type": "constant",
+                        "role": "const-01",
+                        "inputPortIds": [],
+                        "outputPortIds": ["out"]
+                    },
+                    "transferFunction-2": {
+                        "type": "transferFunction",
+                        "role": "tf-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": ["out"]
+                    },
+                    "scope-3": {
+                        "type": "scope",
+                        "role": "scope-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": []
+                    }
+                },
+                "incomingEdgesByNodeId": {
+                    "constant-1": [],
+                    "transferFunction-2": ["edge-constant-to-tf"],
+                    "scope-3": ["edge-tf-to-scope"]
+                },
+                "outgoingEdgesByNodeId": {
+                    "constant-1": ["edge-constant-to-tf"],
+                    "transferFunction-2": ["edge-tf-to-scope"],
+                    "scope-3": []
+                }
+            }
+        })
+    }
+
+    fn same_order_transfer_function_fixture_value() -> Value {
+        json!({
+            "version": 1,
+            "kind": "ctrl-lab-project",
+            "generatedAt": "2026-04-12T00:00:00.000Z",
+            "title": "same-order-transfer-function",
+            "simulation": {
+                "endTime": 1.0,
+                "stepSize": 0.1
+            },
+            "nodes": [
+                {
+                    "id": "constant-1",
+                    "type": "constant",
+                    "label": "Constant",
+                    "role": "const-01",
+                    "position": { "x": 0, "y": 0 },
+                    "properties": { "value": "1.0", "dataType": "f32" }
+                },
+                {
+                    "id": "transferFunction-2",
+                    "type": "transferFunction",
+                    "label": "Transfer Function",
+                    "role": "tf-01",
+                    "position": { "x": 160, "y": 0 },
+                    "properties": {
+                        "numerator": "1.0 1.0",
+                        "denominator": "1.0 1.0",
+                        "stateName": "x",
+                        "dataType": "f32"
+                    }
+                },
+                {
+                    "id": "scope-3",
+                    "type": "scope",
+                    "label": "Scope",
+                    "role": "scope-01",
+                    "position": { "x": 320, "y": 0 },
+                    "properties": {
+                        "channel": "CH-1",
+                        "timebase": "1 s/div",
+                        "dataType": "f32"
+                    }
+                }
+            ],
+            "edges": [
+                {
+                    "id": "edge-constant-to-tf",
+                    "sourceNodeId": "constant-1",
+                    "sourcePortId": "out",
+                    "targetNodeId": "transferFunction-2",
+                    "targetPortId": "in"
+                },
+                {
+                    "id": "edge-tf-to-scope",
+                    "sourceNodeId": "transferFunction-2",
+                    "sourcePortId": "out",
+                    "targetNodeId": "scope-3",
+                    "targetPortId": "in"
+                }
+            ],
+            "graphIndex": {
+                "nodesById": {
+                    "constant-1": {
+                        "type": "constant",
+                        "role": "const-01",
+                        "inputPortIds": [],
+                        "outputPortIds": ["out"]
+                    },
+                    "transferFunction-2": {
+                        "type": "transferFunction",
+                        "role": "tf-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": ["out"]
+                    },
+                    "scope-3": {
+                        "type": "scope",
+                        "role": "scope-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": []
+                    }
+                },
+                "incomingEdgesByNodeId": {
+                    "constant-1": [],
+                    "transferFunction-2": ["edge-constant-to-tf"],
+                    "scope-3": ["edge-tf-to-scope"]
+                },
+                "outgoingEdgesByNodeId": {
+                    "constant-1": ["edge-constant-to-tf"],
+                    "transferFunction-2": ["edge-tf-to-scope"],
+                    "scope-3": []
+                }
+            }
+        })
+    }
+
+    fn algebraic_loop_with_same_order_transfer_function_fixture_value() -> Value {
+        json!({
+            "version": 1,
+            "kind": "ctrl-lab-project",
+            "generatedAt": "2026-04-12T00:00:00.000Z",
+            "title": "same-order-tf-algebraic-loop",
+            "simulation": {
+                "endTime": 0.2,
+                "stepSize": 0.1
+            },
+            "nodes": [
+                {
+                    "id": "constant-1",
+                    "type": "constant",
+                    "label": "Constant",
+                    "role": "const-01",
+                    "position": { "x": 0, "y": 0 },
+                    "properties": { "value": "1.0", "dataType": "f32" }
+                },
+                {
+                    "id": "sum-2",
+                    "type": "sum",
+                    "label": "Summing Node",
+                    "role": "sum-01",
+                    "position": { "x": 144, "y": 0 },
+                    "properties": { "equation": "+ +", "dataType": "f32" }
+                },
+                {
+                    "id": "transferFunction-3",
+                    "type": "transferFunction",
+                    "label": "Transfer Function",
+                    "role": "tf-01",
+                    "position": { "x": 288, "y": 0 },
+                    "properties": {
+                        "numerator": "1.0 1.0",
+                        "denominator": "1.0 1.0",
+                        "stateName": "x",
+                        "dataType": "f32"
+                    }
+                }
+            ],
+            "edges": [
+                {
+                    "id": "edge-constant-to-sum-a",
+                    "sourceNodeId": "constant-1",
+                    "sourcePortId": "out",
+                    "targetNodeId": "sum-2",
+                    "targetPortId": "a"
+                },
+                {
+                    "id": "edge-tf-to-sum-b",
+                    "sourceNodeId": "transferFunction-3",
+                    "sourcePortId": "out",
+                    "targetNodeId": "sum-2",
+                    "targetPortId": "b"
+                },
+                {
+                    "id": "edge-sum-to-tf",
+                    "sourceNodeId": "sum-2",
+                    "sourcePortId": "out",
+                    "targetNodeId": "transferFunction-3",
+                    "targetPortId": "in"
+                }
+            ],
+            "graphIndex": {
+                "nodesById": {
+                    "constant-1": {
+                        "type": "constant",
+                        "role": "const-01",
+                        "inputPortIds": [],
+                        "outputPortIds": ["out"]
+                    },
+                    "sum-2": {
+                        "type": "sum",
+                        "role": "sum-01",
+                        "inputPortIds": ["a", "b"],
+                        "outputPortIds": ["out"]
+                    },
+                    "transferFunction-3": {
+                        "type": "transferFunction",
+                        "role": "tf-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": ["out"]
+                    }
+                },
+                "incomingEdgesByNodeId": {
+                    "constant-1": [],
+                    "sum-2": ["edge-constant-to-sum-a", "edge-tf-to-sum-b"],
+                    "transferFunction-3": ["edge-sum-to-tf"]
+                },
+                "outgoingEdgesByNodeId": {
+                    "constant-1": ["edge-constant-to-sum-a"],
+                    "sum-2": ["edge-sum-to-tf"],
+                    "transferFunction-3": ["edge-tf-to-sum-b"]
+                }
+            }
+        })
+    }
+
+    fn switch_fixture_value(selector_value: &str) -> Value {
+        json!({
+            "version": 1,
+            "kind": "ctrl-lab-project",
+            "generatedAt": "2026-04-12T00:00:00.000Z",
+            "title": "switch-and-step",
+            "simulation": {
+                "endTime": 2.0,
+                "stepSize": 0.5
+            },
+            "nodes": [
+                {
+                    "id": "step-1",
+                    "type": "step",
+                    "label": "Step",
+                    "role": "step-01",
+                    "position": { "x": 0, "y": 0 },
+                    "properties": {
+                        "initialValue": "2.0",
+                        "finalValue": "5.0",
+                        "stepTime": "1.0",
+                        "dataType": "f32"
+                    }
+                },
+                {
+                    "id": "constant-2",
+                    "type": "constant",
+                    "label": "Constant",
+                    "role": "const-01",
+                    "position": { "x": 0, "y": 120 },
+                    "properties": { "value": "20.0", "dataType": "f32" }
+                },
+                {
+                    "id": "constant-3",
+                    "type": "constant",
+                    "label": "Constant",
+                    "role": "const-02",
+                    "position": { "x": 0, "y": 240 },
+                    "properties": { "value": selector_value, "dataType": "f32" }
+                },
+                {
+                    "id": "switch-4",
+                    "type": "switch",
+                    "label": "Switch",
+                    "role": "sw-01",
+                    "position": { "x": 180, "y": 120 },
+                    "properties": { "dataType": "f32" }
+                },
+                {
+                    "id": "scope-5",
+                    "type": "scope",
+                    "label": "Scope",
+                    "role": "scope-01",
+                    "position": { "x": 360, "y": 120 },
+                    "properties": {
+                        "channel": "CH-1",
+                        "timebase": "1 s/div",
+                        "dataType": "f32"
+                    }
+                }
+            ],
+            "edges": [
+                {
+                    "id": "edge-step-to-switch-a",
+                    "sourceNodeId": "step-1",
+                    "sourcePortId": "out",
+                    "targetNodeId": "switch-4",
+                    "targetPortId": "a"
+                },
+                {
+                    "id": "edge-const-to-switch-b",
+                    "sourceNodeId": "constant-2",
+                    "sourcePortId": "out",
+                    "targetNodeId": "switch-4",
+                    "targetPortId": "b"
+                },
+                {
+                    "id": "edge-selector-to-switch-sel",
+                    "sourceNodeId": "constant-3",
+                    "sourcePortId": "out",
+                    "targetNodeId": "switch-4",
+                    "targetPortId": "sel"
+                },
+                {
+                    "id": "edge-switch-to-scope",
+                    "sourceNodeId": "switch-4",
+                    "sourcePortId": "out",
+                    "targetNodeId": "scope-5",
+                    "targetPortId": "in"
+                }
+            ],
+            "graphIndex": {
+                "nodesById": {
+                    "step-1": {
+                        "type": "step",
+                        "role": "step-01",
+                        "inputPortIds": [],
+                        "outputPortIds": ["out"]
+                    },
+                    "constant-2": {
+                        "type": "constant",
+                        "role": "const-01",
+                        "inputPortIds": [],
+                        "outputPortIds": ["out"]
+                    },
+                    "constant-3": {
+                        "type": "constant",
+                        "role": "const-02",
+                        "inputPortIds": [],
+                        "outputPortIds": ["out"]
+                    },
+                    "switch-4": {
+                        "type": "switch",
+                        "role": "sw-01",
+                        "inputPortIds": ["a", "sel", "b"],
+                        "outputPortIds": ["out"]
+                    },
+                    "scope-5": {
+                        "type": "scope",
+                        "role": "scope-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": []
+                    }
+                },
+                "incomingEdgesByNodeId": {
+                    "step-1": [],
+                    "constant-2": [],
+                    "constant-3": [],
+                    "switch-4": [
+                        "edge-step-to-switch-a",
+                        "edge-const-to-switch-b",
+                        "edge-selector-to-switch-sel"
+                    ],
+                    "scope-5": ["edge-switch-to-scope"]
+                },
+                "outgoingEdgesByNodeId": {
+                    "step-1": ["edge-step-to-switch-a"],
+                    "constant-2": ["edge-const-to-switch-b"],
+                    "constant-3": ["edge-selector-to-switch-sel"],
+                    "switch-4": ["edge-switch-to-scope"],
+                    "scope-5": []
+                }
+            }
+        })
+    }
+
+    fn delay_fixture_value(delay_time: &str) -> Value {
+        json!({
+            "version": 1,
+            "kind": "ctrl-lab-project",
+            "generatedAt": "2026-04-12T00:00:00.000Z",
+            "title": "delay-test",
+            "simulation": {
+                "endTime": 0.4,
+                "stepSize": 0.1
+            },
+            "nodes": [
+                {
+                    "id": "constant-1",
+                    "type": "constant",
+                    "label": "Constant",
+                    "role": "const-01",
+                    "position": { "x": 0, "y": 0 },
+                    "properties": { "value": "1.0", "dataType": "f32" }
+                },
+                {
+                    "id": "delay-2",
+                    "type": "delay",
+                    "label": "Delay",
+                    "role": "dly-01",
+                    "position": { "x": 144, "y": 0 },
+                    "properties": {
+                        "initialValue": "0.0",
+                        "delayTime": delay_time,
+                        "dataType": "f32"
+                    }
+                },
+                {
+                    "id": "scope-3",
+                    "type": "scope",
+                    "label": "Scope",
+                    "role": "scope-01",
+                    "position": { "x": 288, "y": 0 },
+                    "properties": {
+                        "channel": "CH-1",
+                        "timebase": "1 s/div",
+                        "dataType": "f32"
+                    }
+                }
+            ],
+            "edges": [
+                {
+                    "id": "edge-constant-to-delay",
+                    "sourceNodeId": "constant-1",
+                    "sourcePortId": "out",
+                    "targetNodeId": "delay-2",
+                    "targetPortId": "in"
+                },
+                {
+                    "id": "edge-delay-to-scope",
+                    "sourceNodeId": "delay-2",
+                    "sourcePortId": "out",
+                    "targetNodeId": "scope-3",
+                    "targetPortId": "in"
+                }
+            ],
+            "graphIndex": {
+                "nodesById": {
+                    "constant-1": {
+                        "type": "constant",
+                        "role": "const-01",
+                        "inputPortIds": [],
+                        "outputPortIds": ["out"]
+                    },
+                    "delay-2": {
+                        "type": "delay",
+                        "role": "dly-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": ["out"]
+                    },
+                    "scope-3": {
+                        "type": "scope",
+                        "role": "scope-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": []
+                    }
+                },
+                "incomingEdgesByNodeId": {
+                    "constant-1": [],
+                    "delay-2": ["edge-constant-to-delay"],
+                    "scope-3": ["edge-delay-to-scope"]
+                },
+                "outgoingEdgesByNodeId": {
+                    "constant-1": ["edge-constant-to-delay"],
+                    "delay-2": ["edge-delay-to-scope"],
+                    "scope-3": []
+                }
+            }
+        })
+    }
+
+    fn gain_fixture_value() -> Value {
+        json!({
+            "version": 1,
+            "kind": "ctrl-lab-project",
+            "generatedAt": "2026-04-12T00:00:00.000Z",
+            "title": "gain-test",
+            "simulation": {
+                "endTime": 0.2,
+                "stepSize": 0.1
+            },
+            "nodes": [
+                {
+                    "id": "constant-1",
+                    "type": "constant",
+                    "label": "Constant",
+                    "role": "const-01",
+                    "position": { "x": 0, "y": 0 },
+                    "properties": { "value": "2.0", "dataType": "f32" }
+                },
+                {
+                    "id": "gain-2",
+                    "type": "gain",
+                    "label": "Gain",
+                    "role": "gain-01",
+                    "position": { "x": 144, "y": 0 },
+                    "properties": { "gain": "3.0", "dataType": "f32" }
+                },
+                {
+                    "id": "scope-3",
+                    "type": "scope",
+                    "label": "Scope",
+                    "role": "scope-01",
+                    "position": { "x": 288, "y": 0 },
+                    "properties": {
+                        "channel": "CH-1",
+                        "timebase": "1 s/div",
+                        "dataType": "f32"
+                    }
+                }
+            ],
+            "edges": [
+                {
+                    "id": "edge-constant-to-gain",
+                    "sourceNodeId": "constant-1",
+                    "sourcePortId": "out",
+                    "targetNodeId": "gain-2",
+                    "targetPortId": "in"
+                },
+                {
+                    "id": "edge-gain-to-scope",
+                    "sourceNodeId": "gain-2",
+                    "sourcePortId": "out",
+                    "targetNodeId": "scope-3",
+                    "targetPortId": "in"
+                }
+            ],
+            "graphIndex": {
+                "nodesById": {
+                    "constant-1": {
+                        "type": "constant",
+                        "role": "const-01",
+                        "inputPortIds": [],
+                        "outputPortIds": ["out"]
+                    },
+                    "gain-2": {
+                        "type": "gain",
+                        "role": "gain-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": ["out"]
+                    },
+                    "scope-3": {
+                        "type": "scope",
+                        "role": "scope-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": []
+                    }
+                },
+                "incomingEdgesByNodeId": {
+                    "constant-1": [],
+                    "gain-2": ["edge-constant-to-gain"],
+                    "scope-3": ["edge-gain-to-scope"]
+                },
+                "outgoingEdgesByNodeId": {
+                    "constant-1": ["edge-constant-to-gain"],
+                    "gain-2": ["edge-gain-to-scope"],
+                    "scope-3": []
+                }
+            }
+        })
+    }
+
+    fn square_wave_fixture_value() -> Value {
+        json!({
+            "version": 1,
+            "kind": "ctrl-lab-project",
+            "generatedAt": "2026-04-12T00:00:00.000Z",
+            "title": "square-wave-test",
+            "simulation": {
+                "endTime": 1.0,
+                "stepSize": 0.25
+            },
+            "nodes": [
+                {
+                    "id": "squareWave-1",
+                    "type": "squareWave",
+                    "label": "Square Wave",
+                    "role": "wave-01",
+                    "position": { "x": 0, "y": 0 },
+                    "properties": {
+                        "amplitude": "2.0",
+                        "frequency": "1.0",
+                        "duty": "25",
+                        "dataType": "f32"
+                    }
+                },
+                {
+                    "id": "scope-2",
+                    "type": "scope",
+                    "label": "Scope",
+                    "role": "scope-01",
+                    "position": { "x": 144, "y": 0 },
+                    "properties": {
+                        "channel": "CH-1",
+                        "timebase": "1 s/div",
+                        "dataType": "f32"
+                    }
+                }
+            ],
+            "edges": [
+                {
+                    "id": "edge-wave-to-scope",
+                    "sourceNodeId": "squareWave-1",
+                    "sourcePortId": "out",
+                    "targetNodeId": "scope-2",
+                    "targetPortId": "in"
+                }
+            ],
+            "graphIndex": {
+                "nodesById": {
+                    "squareWave-1": {
+                        "type": "squareWave",
+                        "role": "wave-01",
+                        "inputPortIds": [],
+                        "outputPortIds": ["out"]
+                    },
+                    "scope-2": {
+                        "type": "scope",
+                        "role": "scope-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": []
+                    }
+                },
+                "incomingEdgesByNodeId": {
+                    "squareWave-1": [],
+                    "scope-2": ["edge-wave-to-scope"]
+                },
+                "outgoingEdgesByNodeId": {
+                    "squareWave-1": ["edge-wave-to-scope"],
+                    "scope-2": []
+                }
+            }
+        })
+    }
+
+    fn stateful_feedback_fixture_value() -> Value {
+        json!({
+            "version": 1,
+            "kind": "ctrl-lab-project",
+            "generatedAt": "2026-04-12T00:00:00.000Z",
+            "title": "stateful-feedback",
+            "simulation": {
+                "endTime": 0.3,
+                "stepSize": 0.1
+            },
+            "nodes": [
+                {
+                    "id": "constant-1",
+                    "type": "constant",
+                    "label": "Constant",
+                    "role": "const-01",
+                    "position": { "x": 0, "y": 0 },
+                    "properties": { "value": "1.0", "dataType": "f32" }
+                },
+                {
+                    "id": "integrator-2",
+                    "type": "integrator",
+                    "label": "Integrator",
+                    "role": "int-01",
+                    "position": { "x": 288, "y": 0 },
+                    "properties": { "initialValue": "0.0", "dataType": "f32" }
+                },
+                {
+                    "id": "sum-3",
+                    "type": "sum",
+                    "label": "Summing Node",
+                    "role": "sum-01",
+                    "position": { "x": 144, "y": 0 },
+                    "properties": { "equation": "+ +", "dataType": "f32" }
+                },
+                {
+                    "id": "scope-4",
+                    "type": "scope",
+                    "label": "Scope",
+                    "role": "scope-01",
+                    "position": { "x": 432, "y": 0 },
+                    "properties": {
+                        "channel": "CH-1",
+                        "timebase": "1 s/div",
+                        "dataType": "f32"
+                    }
+                }
+            ],
+            "edges": [
+                {
+                    "id": "edge-constant-to-sum-a",
+                    "sourceNodeId": "constant-1",
+                    "sourcePortId": "out",
+                    "targetNodeId": "sum-3",
+                    "targetPortId": "a"
+                },
+                {
+                    "id": "edge-integrator-to-sum-b",
+                    "sourceNodeId": "integrator-2",
+                    "sourcePortId": "out",
+                    "targetNodeId": "sum-3",
+                    "targetPortId": "b"
+                },
+                {
+                    "id": "edge-sum-to-integrator",
+                    "sourceNodeId": "sum-3",
+                    "sourcePortId": "out",
+                    "targetNodeId": "integrator-2",
+                    "targetPortId": "in"
+                },
+                {
+                    "id": "edge-integrator-to-scope",
+                    "sourceNodeId": "integrator-2",
+                    "sourcePortId": "out",
+                    "targetNodeId": "scope-4",
+                    "targetPortId": "in"
+                }
+            ],
+            "graphIndex": {
+                "nodesById": {
+                    "constant-1": {
+                        "type": "constant",
+                        "role": "const-01",
+                        "inputPortIds": [],
+                        "outputPortIds": ["out"]
+                    },
+                    "integrator-2": {
+                        "type": "integrator",
+                        "role": "int-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": ["out"]
+                    },
+                    "sum-3": {
+                        "type": "sum",
+                        "role": "sum-01",
+                        "inputPortIds": ["a", "b"],
+                        "outputPortIds": ["out"]
+                    },
+                    "scope-4": {
+                        "type": "scope",
+                        "role": "scope-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": []
+                    }
+                },
+                "incomingEdgesByNodeId": {
+                    "constant-1": [],
+                    "integrator-2": ["edge-sum-to-integrator"],
+                    "sum-3": ["edge-constant-to-sum-a", "edge-integrator-to-sum-b"],
+                    "scope-4": ["edge-integrator-to-scope"]
+                },
+                "outgoingEdgesByNodeId": {
+                    "constant-1": ["edge-constant-to-sum-a"],
+                    "integrator-2": ["edge-integrator-to-sum-b", "edge-integrator-to-scope"],
+                    "sum-3": ["edge-sum-to-integrator"],
+                    "scope-4": []
+                }
+            }
+        })
+    }
+
+    fn algebraic_loop_fixture_value() -> Value {
+        json!({
+            "version": 1,
+            "kind": "ctrl-lab-project",
+            "generatedAt": "2026-04-12T00:00:00.000Z",
+            "title": "algebraic-loop",
+            "simulation": {
+                "endTime": 0.2,
+                "stepSize": 0.1
+            },
+            "nodes": [
+                {
+                    "id": "constant-1",
+                    "type": "constant",
+                    "label": "Constant",
+                    "role": "const-01",
+                    "position": { "x": 0, "y": 0 },
+                    "properties": { "value": "1.0", "dataType": "f32" }
+                },
+                {
+                    "id": "gain-2",
+                    "type": "gain",
+                    "label": "Gain",
+                    "role": "gain-01",
+                    "position": { "x": 288, "y": 0 },
+                    "properties": { "gain": "2.0", "dataType": "f32" }
+                },
+                {
+                    "id": "sum-3",
+                    "type": "sum",
+                    "label": "Summing Node",
+                    "role": "sum-01",
+                    "position": { "x": 144, "y": 0 },
+                    "properties": { "equation": "+ +", "dataType": "f32" }
+                }
+            ],
+            "edges": [
+                {
+                    "id": "edge-constant-to-sum-a",
+                    "sourceNodeId": "constant-1",
+                    "sourcePortId": "out",
+                    "targetNodeId": "sum-3",
+                    "targetPortId": "a"
+                },
+                {
+                    "id": "edge-gain-to-sum-b",
+                    "sourceNodeId": "gain-2",
+                    "sourcePortId": "out",
+                    "targetNodeId": "sum-3",
+                    "targetPortId": "b"
+                },
+                {
+                    "id": "edge-sum-to-gain",
+                    "sourceNodeId": "sum-3",
+                    "sourcePortId": "out",
+                    "targetNodeId": "gain-2",
+                    "targetPortId": "in"
+                }
+            ],
+            "graphIndex": {
+                "nodesById": {
+                    "constant-1": {
+                        "type": "constant",
+                        "role": "const-01",
+                        "inputPortIds": [],
+                        "outputPortIds": ["out"]
+                    },
+                    "gain-2": {
+                        "type": "gain",
+                        "role": "gain-01",
+                        "inputPortIds": ["in"],
+                        "outputPortIds": ["out"]
+                    },
+                    "sum-3": {
+                        "type": "sum",
+                        "role": "sum-01",
+                        "inputPortIds": ["a", "b"],
+                        "outputPortIds": ["out"]
+                    }
+                },
+                "incomingEdgesByNodeId": {
+                    "constant-1": [],
+                    "gain-2": ["edge-sum-to-gain"],
+                    "sum-3": ["edge-constant-to-sum-a", "edge-gain-to-sum-b"]
+                },
+                "outgoingEdgesByNodeId": {
+                    "constant-1": ["edge-constant-to-sum-a"],
+                    "gain-2": ["edge-gain-to-sum-b"],
+                    "sum-3": ["edge-sum-to-gain"]
+                }
+            }
+        })
+    }
+
     fn assert_approx_eq(left: f64, right: f64) {
         let delta = (left - right).abs();
         assert!(
@@ -1028,17 +2444,17 @@ mod tests {
     #[test]
     fn parses_valid_fixture_and_returns_topological_order() {
         let dag = parse_project_json(&fixture_json()).expect("fixture should parse");
-        assert_eq!(
-            dag.topological_order,
-            vec![
-                "constant-1".to_string(),
-                "constant-5".to_string(),
-                "integrator-2".to_string(),
-                "integrator-4".to_string(),
-                "sum-3".to_string(),
-                "scope-6".to_string(),
-            ]
-        );
+        assert_eq!(dag.topological_order.len(), 6);
+        let order_index: HashMap<_, _> = dag
+            .topological_order
+            .iter()
+            .enumerate()
+            .map(|(index, node_id)| (node_id.as_str(), index))
+            .collect();
+        assert!(order_index["constant-1"] < order_index["sum-3"]);
+        assert!(order_index["integrator-2"] < order_index["sum-3"]);
+        assert!(order_index["integrator-4"] < order_index["sum-3"]);
+        assert!(order_index["sum-3"] < order_index["scope-6"]);
     }
 
     #[test]
@@ -1088,6 +2504,303 @@ mod tests {
     }
 
     #[test]
+    fn simulates_same_order_first_order_transfer_function() {
+        let dag = parse_value(same_order_transfer_function_fixture_value())
+            .expect("same-order transfer function fixture should parse");
+        let simulation = simulate_validated_dag(&dag)
+            .expect("same-order transfer function fixture should simulate");
+
+        let tf = simulation
+            .values_by_node_id
+            .get("transferFunction-2")
+            .expect("transfer function trace must exist");
+        let scope = simulation
+            .values_by_node_id
+            .get("scope-3")
+            .expect("scope trace must exist");
+
+        assert_approx_eq(tf[0], 1.0);
+        assert_approx_eq(tf[1], 1.0);
+        assert_approx_eq(tf[2], 1.0);
+        assert_approx_eq(*tf.last().unwrap(), 1.0);
+        assert_approx_eq(*scope.last().unwrap(), 1.0);
+    }
+
+    #[test]
+    fn simulates_second_order_system_fixture_with_strictly_proper_feedback() {
+        let dag = parse_project_json(&second_order_system_fixture_json())
+            .expect("second-order system fixture should parse");
+        let simulation = simulate_validated_dag(&dag)
+            .expect("second-order system fixture should simulate");
+
+        let tf = simulation
+            .values_by_node_id
+            .get("transferFunction-9")
+            .expect("transferFunction-9 trace must exist");
+        let scope = simulation
+            .values_by_node_id
+            .get("scope-10")
+            .expect("scope-10 trace must exist");
+
+        assert_eq!(simulation.times.len(), 101);
+        assert_eq!(tf.len(), simulation.times.len());
+        assert_eq!(scope.len(), simulation.times.len());
+        assert!(tf.iter().all(|value| value.is_finite()));
+        assert!(scope.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn simulates_constant_into_second_order_transfer_function() {
+        let dag = parse_value(second_order_transfer_function_fixture_value())
+            .expect("second-order transfer function fixture should parse");
+        let simulation = simulate_validated_dag(&dag)
+            .expect("second-order transfer function fixture should simulate");
+
+        assert_eq!(simulation.times.len(), 11);
+
+        let tf = simulation
+            .values_by_node_id
+            .get("transferFunction-2")
+            .expect("transfer function trace must exist");
+        let scope = simulation
+            .values_by_node_id
+            .get("scope-3")
+            .expect("scope trace must exist");
+
+        assert_approx_eq(tf[0], 0.0);
+        assert_approx_eq(tf[1], 0.0);
+        assert_approx_eq(tf[2], 0.01);
+        assert_approx_eq(tf[3], 0.029);
+        assert_approx_eq(*tf.last().unwrap(), 0.33231044);
+        assert_approx_eq(*scope.last().unwrap(), 0.33231044);
+    }
+
+    #[test]
+    fn simulates_second_order_transfer_function_with_first_order_numerator() {
+        let mut value = second_order_transfer_function_fixture_value();
+        value["nodes"][1]["properties"]["numerator"] = json!("1.0 1.0");
+
+        let dag = parse_value(value)
+            .expect("second-order transfer function with first-order numerator should parse");
+        let simulation = simulate_validated_dag(&dag)
+            .expect("second-order transfer function with first-order numerator should simulate");
+
+        let tf = simulation
+            .values_by_node_id
+            .get("transferFunction-2")
+            .expect("transfer function trace must exist");
+
+        assert_approx_eq(tf[0], 0.0);
+        assert_approx_eq(tf[1], 0.1);
+        assert_approx_eq(tf[2], 0.2);
+        assert_approx_eq(*tf.last().unwrap(), 0.9008019901);
+    }
+
+    #[test]
+    fn simulates_step_source_values() {
+        let dag = parse_value(switch_fixture_value("0")).expect("step fixture should parse");
+        let simulation = simulate_validated_dag(&dag).expect("step fixture should simulate");
+
+        let step = simulation
+            .values_by_node_id
+            .get("step-1")
+            .expect("step trace must exist");
+
+        assert_approx_eq(step[0], 2.0);
+        assert_approx_eq(step[1], 2.0);
+        assert_approx_eq(step[2], 5.0);
+        assert_approx_eq(*step.last().unwrap(), 5.0);
+    }
+
+    #[test]
+    fn simulates_delay_block_values() {
+        let dag = parse_value(delay_fixture_value("0.2")).expect("delay fixture should parse");
+        let simulation = simulate_validated_dag(&dag).expect("delay fixture should simulate");
+
+        let delay = simulation
+            .values_by_node_id
+            .get("delay-2")
+            .expect("delay trace must exist");
+
+        assert_approx_eq(delay[0], 0.0);
+        assert_approx_eq(delay[1], 0.0);
+        assert_approx_eq(delay[2], 1.0);
+        assert_approx_eq(*delay.last().unwrap(), 1.0);
+    }
+
+    #[test]
+    fn simulates_constant_through_gain() {
+        let dag = parse_value(gain_fixture_value()).expect("gain fixture should parse");
+        let simulation = simulate_validated_dag(&dag).expect("gain fixture should simulate");
+
+        let gain = simulation
+            .values_by_node_id
+            .get("gain-2")
+            .expect("gain trace must exist");
+
+        assert!(gain.iter().all(|value| (*value - 6.0).abs() <= 1e-9));
+    }
+
+    #[test]
+    fn simulates_square_wave_source_values() {
+        let dag =
+            parse_value(square_wave_fixture_value()).expect("square wave fixture should parse");
+        let simulation = simulate_validated_dag(&dag).expect("square wave fixture should simulate");
+
+        let wave = simulation
+            .values_by_node_id
+            .get("squareWave-1")
+            .expect("square wave trace must exist");
+
+        assert_approx_eq(wave[0], 2.0);
+        assert_approx_eq(wave[1], 0.0);
+        assert_approx_eq(wave[2], 0.0);
+        assert_approx_eq(wave[3], 0.0);
+        assert_approx_eq(wave[4], 2.0);
+    }
+
+    #[test]
+    fn compiles_stateful_feedback_loop_and_simulates_deterministically() {
+        let dag = parse_value(stateful_feedback_fixture_value())
+            .expect("stateful feedback fixture should parse");
+        let simulation =
+            simulate_validated_dag(&dag).expect("stateful feedback fixture should simulate");
+
+        let order_index: HashMap<_, _> = dag
+            .topological_order
+            .iter()
+            .enumerate()
+            .map(|(index, node_id)| (node_id.as_str(), index))
+            .collect();
+        assert!(order_index["constant-1"] < order_index["sum-3"]);
+        assert!(order_index["integrator-2"] < order_index["sum-3"]);
+        assert!(order_index["integrator-2"] < order_index["scope-4"]);
+        assert_eq!(
+            dag.block_behaviors.get("integrator-2"),
+            Some(&BlockBehavior {
+                is_stateful: true,
+                is_direct_feedthrough: false,
+            })
+        );
+        assert_eq!(
+            dag.block_behaviors.get("sum-3"),
+            Some(&BlockBehavior {
+                is_stateful: false,
+                is_direct_feedthrough: true,
+            })
+        );
+
+        let integrator = simulation
+            .values_by_node_id
+            .get("integrator-2")
+            .expect("integrator trace must exist");
+        let sum = simulation
+            .values_by_node_id
+            .get("sum-3")
+            .expect("sum trace must exist");
+
+        assert_approx_eq(integrator[0], 0.0);
+        assert_approx_eq(integrator[1], 0.1);
+        assert_approx_eq(integrator[2], 0.21);
+        assert_approx_eq(sum[0], 1.0);
+        assert_approx_eq(sum[1], 1.1);
+        assert_approx_eq(sum[2], 1.21);
+    }
+
+    #[test]
+    fn classifies_same_order_transfer_function_as_direct_feedthrough() {
+        let dag = parse_value(same_order_transfer_function_fixture_value())
+            .expect("same-order transfer function fixture should parse");
+
+        assert_eq!(
+            dag.block_behaviors.get("transferFunction-2"),
+            Some(&BlockBehavior {
+                is_stateful: true,
+                is_direct_feedthrough: true,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_algebraic_loop_between_sum_and_gain() {
+        assert_eq!(
+            parse_value(algebraic_loop_fixture_value()),
+            Err(ParseError::AlgebraicLoopDetected)
+        );
+    }
+
+    #[test]
+    fn delay_uses_global_step_size_when_delay_time_is_negative_one() {
+        let dag = parse_value(delay_fixture_value("-1")).expect("delay fixture should parse");
+        let simulation = simulate_validated_dag(&dag).expect("delay fixture should simulate");
+
+        let delay = simulation
+            .values_by_node_id
+            .get("delay-2")
+            .expect("delay trace must exist");
+
+        assert_approx_eq(delay[0], 0.0);
+        assert_approx_eq(delay[1], 1.0);
+        assert_approx_eq(delay[2], 1.0);
+        assert_approx_eq(*delay.last().unwrap(), 1.0);
+    }
+
+    #[test]
+    fn rejects_negative_delay_time() {
+        let dag = parse_value(delay_fixture_value("-0.1")).expect("delay fixture should parse");
+
+        assert_eq!(
+            simulate_validated_dag(&dag),
+            Err(SimulationError::InvalidDelayTime {
+                node_id: "delay-2".to_string(),
+                delay_time: -0.1,
+            })
+        );
+    }
+
+    #[test]
+    fn switch_routes_input_a_when_selector_is_zero() {
+        let dag = parse_value(switch_fixture_value("0")).expect("switch fixture should parse");
+        let simulation = simulate_validated_dag(&dag).expect("switch fixture should simulate");
+
+        let switch = simulation
+            .values_by_node_id
+            .get("switch-4")
+            .expect("switch trace must exist");
+
+        assert_approx_eq(switch[0], 2.0);
+        assert_approx_eq(switch[1], 2.0);
+        assert_approx_eq(switch[2], 5.0);
+        assert_approx_eq(*switch.last().unwrap(), 5.0);
+    }
+
+    #[test]
+    fn switch_routes_input_b_when_selector_is_one() {
+        let dag = parse_value(switch_fixture_value("1")).expect("switch fixture should parse");
+        let simulation = simulate_validated_dag(&dag).expect("switch fixture should simulate");
+
+        let switch = simulation
+            .values_by_node_id
+            .get("switch-4")
+            .expect("switch trace must exist");
+
+        assert!(switch.iter().all(|value| (*value - 20.0).abs() <= 1e-9));
+    }
+
+    #[test]
+    fn switch_rejects_invalid_selector_values() {
+        let dag = parse_value(switch_fixture_value("2")).expect("switch fixture should parse");
+
+        assert_eq!(
+            simulate_validated_dag(&dag),
+            Err(SimulationError::InvalidSwitchSelector {
+                node_id: "switch-4".to_string(),
+                value: 2.0,
+            })
+        );
+    }
+
+    #[test]
     fn rejects_invalid_transfer_function_coefficients() {
         let mut value = transfer_function_fixture_value();
         value["nodes"][1]["properties"]["numerator"] = json!("1.0 nope");
@@ -1106,14 +2819,14 @@ mod tests {
     #[test]
     fn rejects_unsupported_transfer_function_shape() {
         let mut value = transfer_function_fixture_value();
-        value["nodes"][1]["properties"]["numerator"] = json!("1.0 0.5");
+        value["nodes"][1]["properties"]["numerator"] = json!("1.0 0.5 0.25");
 
         let dag = parse_value(value).expect("graph shape should still validate");
         assert_eq!(
             simulate_validated_dag(&dag),
             Err(SimulationError::UnsupportedTransferFunctionShape {
                 node_id: "transferFunction-2".to_string(),
-                numerator_len: 2,
+                numerator_len: 3,
                 denominator_len: 2,
             })
         );
@@ -1122,15 +2835,15 @@ mod tests {
     #[test]
     fn rejects_unsupported_node_type_during_simulation() {
         let mut value = fixture_value();
-        value["nodes"][0]["type"] = json!("squareWave");
-        value["graphIndex"]["nodesById"]["constant-1"]["type"] = json!("squareWave");
+        value["nodes"][0]["type"] = json!("mystery");
+        value["graphIndex"]["nodesById"]["constant-1"]["type"] = json!("mystery");
 
         let dag = parse_value(value).expect("graph shape should still validate");
         assert_eq!(
             simulate_validated_dag(&dag),
             Err(SimulationError::UnsupportedNodeType {
                 node_id: "constant-1".to_string(),
-                node_type: "squareWave".to_string(),
+                node_type: "mystery".to_string(),
             })
         );
     }
@@ -1308,7 +3021,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_dag_cycle_without_duplicate_target_port_use() {
+    fn rejects_algebraic_loop_without_duplicate_target_port_use() {
         let mut value = fixture_value();
 
         let nodes = value["nodes"].as_array_mut().unwrap();
@@ -1386,7 +3099,15 @@ mod tests {
         value["graphIndex"]["outgoingEdgesByNodeId"]["integrator-4"] =
             json!(["xy-edge__integrator-4out-sum-3b"]);
 
-        assert_eq!(parse_value(value), Err(ParseError::CycleDetected));
+        assert_eq!(parse_value(value), Err(ParseError::AlgebraicLoopDetected));
+    }
+
+    #[test]
+    fn rejects_algebraic_loop_with_same_order_transfer_function() {
+        assert_eq!(
+            parse_value(algebraic_loop_with_same_order_transfer_function_fixture_value()),
+            Err(ParseError::AlgebraicLoopDetected)
+        );
     }
 
     #[test]

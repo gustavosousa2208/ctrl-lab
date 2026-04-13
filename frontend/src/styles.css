@@ -91,6 +91,52 @@ button {
   padding: 1rem;
 }
 
+.app-launch-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.app-launch-screen__panel {
+  width: min(26rem, 100%);
+  display: grid;
+  gap: 0.55rem;
+  padding: 1rem;
+  border: 2px solid #f7f7f1;
+  border-right-color: #6d7168;
+  border-bottom-color: #6d7168;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.18), transparent 48%),
+    linear-gradient(180deg, #cdd3c4 0%, #bcc2b2 100%);
+  box-shadow: inset 1px 1px 0 #dde1d5, inset -1px -1px 0 #8e9488;
+}
+
+.app-launch-screen__eyebrow {
+  color: #566055;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.app-launch-screen__panel strong,
+.app-launch-screen__panel p {
+  margin: 0;
+}
+
+.app-launch-screen__panel strong {
+  color: #1f241f;
+  font-size: 1rem;
+  text-transform: uppercase;
+}
+
+.app-launch-screen__panel p {
+  color: #40473f;
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
 .app-crash-screen__panel {
   width: min(48rem, 100%);
   padding: 1rem;
@@ -932,6 +978,15 @@ button {
     linear-gradient(180deg, #d6ddcf 0%, #c7cebf 100%);
 }
 
+.library-card--step,
+.library-card--gain,
+.library-card--delay,
+.library-card--switch {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent 55%),
+    linear-gradient(180deg, #ddd5c9 0%, #cec3b3 100%);
+}
+
 .library-card--transferFunction {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent 55%),
@@ -1115,6 +1170,15 @@ button {
     0 0 0 1px rgba(83, 90, 78, 0.12);
 }
 
+.flow-node__rotor {
+  width: 100%;
+  min-height: inherit;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  transform-origin: center center;
+}
+
 .flow-node::after {
   content: "";
   position: absolute;
@@ -1160,6 +1224,18 @@ button {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+}
+
+.flow-node__id {
+  padding-left: 0.55rem;
+  color: #677062;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .flow-node__meta {
@@ -1209,8 +1285,10 @@ button {
 
 .flow-node--sum,
 .flow-node--constant,
+.flow-node--gain,
 .flow-node--integrator,
-.flow-node--transferFunction {
+.flow-node--transferFunction,
+.flow-node--delay {
   padding: 0;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.18), transparent 58%),
@@ -1218,11 +1296,28 @@ button {
 }
 
 .flow-node--sum,
+.flow-node--gain,
 .flow-node--integrator,
-.flow-node--transferFunction {
+.flow-node--transferFunction,
+.flow-node--delay {
   width: 96px;
   height: 96px;
   min-height: 96px;
+}
+
+.flow-node--step {
+  width: 132px;
+  min-height: 120px;
+}
+
+.flow-node--scope {
+  width: 144px;
+  min-height: 128px;
+}
+
+.flow-node--switch {
+  width: 132px;
+  min-height: 132px;
 }
 
 .flow-node--squareWave {
@@ -1231,8 +1326,10 @@ button {
 }
 
 .flow-node--constant::after,
+.flow-node--gain::after,
 .flow-node--integrator::after,
 .flow-node--transferFunction::after,
+.flow-node--delay::after,
 .flow-node--sum::after {
   display: none;
 }

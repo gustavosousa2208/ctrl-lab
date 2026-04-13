@@ -1,0 +1,258 @@
+{
+  "version": 1,
+  "kind": "ctrl-lab-project",
+  "generatedAt": "2026-04-13T01:00:37.943Z",
+  "title": "",
+  "simulation": {
+    "endTime": 10,
+    "stepSize": 0.1,
+    "zoomStep": 0.05,
+    "zoom": 0.9,
+    "viewportX": -48,
+    "viewportY": -69
+  },
+  "nodes": [
+    {
+      "id": "transferFunction-9",
+      "type": "transferFunction",
+      "label": "Transfer Function",
+      "role": "tf-02",
+      "position": {
+        "x": 840,
+        "y": 432
+      },
+      "rotation": 0,
+      "properties": {
+        "numerator": "3 2",
+        "denominator": "2 2 2",
+        "stateName": "x",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "scope-10",
+      "type": "scope",
+      "label": "Scope",
+      "role": "scope-02",
+      "position": {
+        "x": 1080,
+        "y": 432
+      },
+      "rotation": 0,
+      "properties": {
+        "channel": "CH-1",
+        "timebase": "1 s/div",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "step-11",
+      "type": "step",
+      "label": "Step",
+      "role": "step-02",
+      "position": {
+        "x": 144,
+        "y": 432
+      },
+      "rotation": 0,
+      "properties": {
+        "initialValue": "0.0",
+        "finalValue": "1.0",
+        "stepTime": "1.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "transferFunction-12",
+      "type": "transferFunction",
+      "label": "Transfer Function",
+      "role": "tf-03",
+      "position": {
+        "x": 360,
+        "y": 432
+      },
+      "rotation": 0,
+      "properties": {
+        "numerator": "0.0240",
+        "denominator": "1.0000   -0.3617    0.9994",
+        "stateName": "T/R",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "transferFunction-13",
+      "type": "transferFunction",
+      "label": "Transfer Function",
+      "role": "tf-04",
+      "position": {
+        "x": 624,
+        "y": 576
+      },
+      "rotation": 180,
+      "properties": {
+        "numerator": "-1.0074",
+        "denominator": "1.0000   -0.3617    0.9994",
+        "stateName": "S/R",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "sum-14",
+      "type": "sum",
+      "label": "Summing Node",
+      "role": "sum-02",
+      "position": {
+        "x": 504,
+        "y": 432
+      },
+      "rotation": 0,
+      "properties": {
+        "equation": "+ -",
+        "dataType": "f32"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "xy-edge__transferFunction-9out-scope-10in",
+      "sourceNodeId": "transferFunction-9",
+      "sourcePortId": "out",
+      "targetNodeId": "scope-10",
+      "targetPortId": "in"
+    },
+    {
+      "id": "xy-edge__step-11out-transferFunction-12in",
+      "sourceNodeId": "step-11",
+      "sourcePortId": "out",
+      "targetNodeId": "transferFunction-12",
+      "targetPortId": "in"
+    },
+    {
+      "id": "xy-edge__transferFunction-12out-sum-14a",
+      "sourceNodeId": "transferFunction-12",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-14",
+      "targetPortId": "a"
+    },
+    {
+      "id": "xy-edge__transferFunction-13out-sum-14b",
+      "sourceNodeId": "transferFunction-13",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-14",
+      "targetPortId": "b"
+    },
+    {
+      "id": "xy-edge__sum-14out-transferFunction-9in",
+      "sourceNodeId": "sum-14",
+      "sourcePortId": "out",
+      "targetNodeId": "transferFunction-9",
+      "targetPortId": "in"
+    },
+    {
+      "id": "xy-edge__transferFunction-9out-transferFunction-13in",
+      "sourceNodeId": "transferFunction-9",
+      "sourcePortId": "out",
+      "targetNodeId": "transferFunction-13",
+      "targetPortId": "in"
+    }
+  ],
+  "graphIndex": {
+    "nodesById": {
+      "transferFunction-9": {
+        "type": "transferFunction",
+        "role": "tf-02",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "scope-10": {
+        "type": "scope",
+        "role": "scope-02",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": []
+      },
+      "step-11": {
+        "type": "step",
+        "role": "step-02",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "transferFunction-12": {
+        "type": "transferFunction",
+        "role": "tf-03",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "transferFunction-13": {
+        "type": "transferFunction",
+        "role": "tf-04",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "sum-14": {
+        "type": "sum",
+        "role": "sum-02",
+        "inputPortIds": [
+          "a",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      }
+    },
+    "incomingEdgesByNodeId": {
+      "transferFunction-9": [
+        "xy-edge__sum-14out-transferFunction-9in"
+      ],
+      "scope-10": [
+        "xy-edge__transferFunction-9out-scope-10in"
+      ],
+      "step-11": [],
+      "transferFunction-12": [
+        "xy-edge__step-11out-transferFunction-12in"
+      ],
+      "transferFunction-13": [
+        "xy-edge__transferFunction-9out-transferFunction-13in"
+      ],
+      "sum-14": [
+        "xy-edge__transferFunction-12out-sum-14a",
+        "xy-edge__transferFunction-13out-sum-14b"
+      ]
+    },
+    "outgoingEdgesByNodeId": {
+      "transferFunction-9": [
+        "xy-edge__transferFunction-9out-scope-10in",
+        "xy-edge__transferFunction-9out-transferFunction-13in"
+      ],
+      "scope-10": [],
+      "step-11": [
+        "xy-edge__step-11out-transferFunction-12in"
+      ],
+      "transferFunction-12": [
+        "xy-edge__transferFunction-12out-sum-14a"
+      ],
+      "transferFunction-13": [
+        "xy-edge__transferFunction-13out-sum-14b"
+      ],
+      "sum-14": [
+        "xy-edge__sum-14out-transferFunction-9in"
+      ]
+    }
+  }
+}

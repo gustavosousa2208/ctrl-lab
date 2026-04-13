@@ -1,15 +1,15 @@
 {
   "version": 1,
   "kind": "ctrl-lab-project",
-  "generatedAt": "2026-04-11T22:21:45.718Z",
+  "generatedAt": "2026-04-12T22:47:50.741Z",
   "title": "",
   "simulation": {
     "endTime": 10,
     "stepSize": 0.1,
     "zoomStep": 0.05,
-    "zoom": 1,
-    "viewportX": -115,
-    "viewportY": 170
+    "zoom": 0.9,
+    "viewportX": 156.0000000000001,
+    "viewportY": 265
   },
   "nodes": [
     {
@@ -22,23 +22,9 @@
         "y": 24
       },
       "properties": {
-        "numerator": "1.0",
-        "denominator": "1.0 1.0",
+        "numerator": "1",
+        "denominator": "1 1",
         "stateName": "Temperature",
-        "dataType": "f32"
-      }
-    },
-    {
-      "id": "constant-8",
-      "type": "constant",
-      "label": "Constant",
-      "role": "const-03",
-      "position": {
-        "x": 216,
-        "y": 24
-      },
-      "properties": {
-        "value": "1.0",
         "dataType": "f32"
       }
     },
@@ -48,8 +34,8 @@
       "label": "Scope",
       "role": "scope-01",
       "position": {
-        "x": 984,
-        "y": -24
+        "x": 864,
+        "y": 24
       },
       "properties": {
         "channel": "CH-1",
@@ -63,11 +49,41 @@
       "label": "Summing Node",
       "role": "sum-01",
       "position": {
-        "x": 432,
+        "x": 192,
         "y": 24
       },
       "properties": {
         "equation": "+ -",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "gain-12",
+      "type": "gain",
+      "label": "Gain",
+      "role": "gain-01",
+      "position": {
+        "x": 408,
+        "y": 24
+      },
+      "properties": {
+        "gain": "2",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "step-13",
+      "type": "step",
+      "label": "Step",
+      "role": "step-01",
+      "position": {
+        "x": -72,
+        "y": 24
+      },
+      "properties": {
+        "initialValue": "0.0",
+        "finalValue": "1.0",
+        "stepTime": "1.0",
         "dataType": "f32"
       }
     }
@@ -81,15 +97,22 @@
       "targetPortId": "in"
     },
     {
-      "id": "xy-edge__sum-11out-transferFunction-7in",
+      "id": "xy-edge__sum-11out-gain-12in",
       "sourceNodeId": "sum-11",
+      "sourcePortId": "out",
+      "targetNodeId": "gain-12",
+      "targetPortId": "in"
+    },
+    {
+      "id": "xy-edge__gain-12out-transferFunction-7in",
+      "sourceNodeId": "gain-12",
       "sourcePortId": "out",
       "targetNodeId": "transferFunction-7",
       "targetPortId": "in"
     },
     {
-      "id": "xy-edge__constant-8out-sum-11a",
-      "sourceNodeId": "constant-8",
+      "id": "xy-edge__step-13out-sum-11a",
+      "sourceNodeId": "step-13",
       "sourcePortId": "out",
       "targetNodeId": "sum-11",
       "targetPortId": "a"
@@ -114,14 +137,6 @@
           "out"
         ]
       },
-      "constant-8": {
-        "type": "constant",
-        "role": "const-03",
-        "inputPortIds": [],
-        "outputPortIds": [
-          "out"
-        ]
-      },
       "scope-10": {
         "type": "scope",
         "role": "scope-01",
@@ -140,32 +155,56 @@
         "outputPortIds": [
           "out"
         ]
+      },
+      "gain-12": {
+        "type": "gain",
+        "role": "gain-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "step-13": {
+        "type": "step",
+        "role": "step-01",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
       }
     },
     "incomingEdgesByNodeId": {
       "transferFunction-7": [
-        "xy-edge__sum-11out-transferFunction-7in"
+        "xy-edge__gain-12out-transferFunction-7in"
       ],
-      "constant-8": [],
       "scope-10": [
         "xy-edge__transferFunction-7out-scope-10in"
       ],
       "sum-11": [
-        "xy-edge__constant-8out-sum-11a",
+        "xy-edge__step-13out-sum-11a",
         "xy-edge__transferFunction-7out-sum-11b"
-      ]
+      ],
+      "gain-12": [
+        "xy-edge__sum-11out-gain-12in"
+      ],
+      "step-13": []
     },
     "outgoingEdgesByNodeId": {
       "transferFunction-7": [
         "xy-edge__transferFunction-7out-scope-10in",
         "xy-edge__transferFunction-7out-sum-11b"
       ],
-      "constant-8": [
-        "xy-edge__constant-8out-sum-11a"
-      ],
       "scope-10": [],
       "sum-11": [
-        "xy-edge__sum-11out-transferFunction-7in"
+        "xy-edge__sum-11out-gain-12in"
+      ],
+      "gain-12": [
+        "xy-edge__gain-12out-transferFunction-7in"
+      ],
+      "step-13": [
+        "xy-edge__step-13out-sum-11a"
       ]
     }
   }

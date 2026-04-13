@@ -46,13 +46,13 @@ fn run() -> Result<(), String> {
     })?;
 
     println!("project file: {}", project_file.display());
-    println!("status: valid DAG");
+    println!("status: valid simulation graph");
     println!("kind: {}", validated.metadata.kind);
     println!("version: {}", validated.metadata.version);
     println!("title: {}", validated.metadata.title);
     println!("nodes: {}", validated.nodes_by_id.len());
     println!("edges: {}", validated.edges.len());
-    println!("topological order:");
+    println!("execution order:");
     for (index, node_id) in validated.topological_order.iter().enumerate() {
         println!("{}. {}", index + 1, node_id);
     }

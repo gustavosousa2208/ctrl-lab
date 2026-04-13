@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "packageManager": "bun@1.2.9",
-  "description": "Open control systems lab for block-diagram design and simulation.",
+  "description": "Embed Control Systems Easily.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

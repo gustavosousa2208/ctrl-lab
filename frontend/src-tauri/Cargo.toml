@@ -1,7 +1,7 @@
 [package]
 name = "ctrl-lab"
 version = "0.1.0"
-description = "Open control systems lab for block-diagram design and simulation."
+description = "Embed Control Systems Easily."
 edition = "2021"
 
 [lib]
