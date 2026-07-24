@@ -1,3 +1,58 @@
 # TODO
 
+## Done (this pass)
+
+- Backend: investigated the "drift" around `test-projects/04-2nd-order-system.json` — the discrete feedback engine was already correct (matches an independent reference and the analytic closed-loop DC gain 0.3917). The stale finite-only test hid it; it is now a reference-value golden.
+- Backend: replaced forward Euler for continuous blocks with exact ZOH discretization at `Ts` (controllable-canonical state space + augmented matrix exponential), matching MATLAB `c2d(..., 'zoh')`. See `backend/AGENTS.md` for the locked numerical contract.
+- Backend: transfer-function handling verified for continuous, discrete `z`, and discrete `z^-1`; deterministic and covered by unit + golden tests.
+- Validation: canonical conventions (highest-power-first, single-clock `Ts`, GCD base-rate rule, strictly-proper feedback) documented in `backend/AGENTS.md`.
+- Backend: golden regression against MATLAB references landed — every `test-projects/NN-*.json` has a matching `NN-*.m` producing `NN-*.ref.csv`, compared sample-by-sample by `backend/tests/golden.rs` (r/e/u/y and switch/gain signals included).
+
+## Now
+
+- Validation: document the exact RST equation form the project will use before firmware work starts (deferred deployable-format decision — see `backend/AGENTS.md` "Open / deferred").
+- Decide whether to commit the generated `*.ref.csv` files (lets the golden suite run without MATLAB) or keep them git-ignored and MATLAB-regenerated.
+
+## Next
+
+- Backend: extend golden coverage to internal controller states sample-by-sample (currently r/e/u/y and block I/O).
+- Backend: add dedicated tests for:
+  - step tracking
+  - ramp tracking
+  - disturbance rejection
+  - measurement noise injection
+  - startup and reset behavior
+  - one-sample delay mismatch
+  - near-stability-boundary pole placements
+- Backend: add explicit tests for sign convention mistakes in `R`, `S`, and `T`.
+- Backend: add numeric robustness checks for `f32` execution versus MATLAB `double`.
 - Frontend contract hardening: `graphIndex` is currently trusted by the backend to save parse/validation time. Add frontend-side consistency checks so `graphIndex` cannot drift from serialized `nodes` and `edges`.
+
+## Before Firmware RST
+
+- Backend: define a deployable, versioned controller contract for RST blocks.
+- Backend: generate the exact runtime representation the firmware will execute, without frontend-specific semantics.
+- Firmware: define the controller runtime API for coefficients, state reset, step execution, and telemetry.
+- Firmware: decide saturation and safety behavior:
+  - output limits
+  - reset policy
+  - invalid input handling
+  - watchdog/failsafe behavior
+- Firmware: define timing requirements and measurement points for:
+  - control step time
+  - WCET
+  - jitter
+  - telemetry latency
+
+## Hardware Validation
+
+- HIL: run the same test vectors through MATLAB/Simulink, backend, and firmware, then compare traces.
+- HIL: verify cold start, warm reset, missed deadline, stale sample, and sensor fault behavior.
+- HIL: verify plant-model mismatch robustness before claiming controller portability.
+- Metrics: report `max_abs_error`, RMS error, settling time, overshoot, and deadline misses for each validation case.
+
+## Nice To Have
+
+- Frontend: surface transfer-function domain and variable more clearly in the node summary and inspector.
+- Frontend: warn when a discrete transfer function is created without an explicitly stated sample-time assumption.
+- Tooling: add an import/export path for MATLAB comparison datasets.

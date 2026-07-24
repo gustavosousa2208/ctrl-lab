@@ -1,15 +1,15 @@
 {
   "version": 1,
   "kind": "ctrl-lab-project",
-  "generatedAt": "2026-04-13T01:00:37.943Z",
+  "generatedAt": "2026-04-18T19:45:52.332Z",
   "title": "",
   "simulation": {
-    "endTime": 10,
-    "stepSize": 0.1,
+    "endTime": 25,
+    "stepSize": 0.05,
     "zoomStep": 0.05,
     "zoom": 0.9,
-    "viewportX": -48,
-    "viewportY": -69
+    "viewportX": -30,
+    "viewportY": -119
   },
   "nodes": [
     {
@@ -23,8 +23,10 @@
       },
       "rotation": 0,
       "properties": {
-        "numerator": "3 2",
-        "denominator": "2 2 2",
+        "numerator": "0 0.0178 0.0177",
+        "denominator": "1 -1.9696 0.9739",
+        "domain": "discrete",
+        "discreteVariable": "z",
         "stateName": "x",
         "dataType": "f32"
       }
@@ -63,44 +65,25 @@
       }
     },
     {
-      "id": "transferFunction-12",
-      "type": "transferFunction",
-      "label": "Transfer Function",
-      "role": "tf-03",
+      "id": "gain-15",
+      "type": "gain",
+      "label": "Gain",
+      "role": "gain-01",
       "position": {
-        "x": 360,
+        "x": 336,
         "y": 432
       },
       "rotation": 0,
       "properties": {
-        "numerator": "0.0240",
-        "denominator": "1.0000   -0.3617    0.9994",
-        "stateName": "T/R",
+        "gain": "1.0",
         "dataType": "f32"
       }
     },
     {
-      "id": "transferFunction-13",
-      "type": "transferFunction",
-      "label": "Transfer Function",
-      "role": "tf-04",
-      "position": {
-        "x": 624,
-        "y": 576
-      },
-      "rotation": 180,
-      "properties": {
-        "numerator": "-1.0074",
-        "denominator": "1.0000   -0.3617    0.9994",
-        "stateName": "S/R",
-        "dataType": "f32"
-      }
-    },
-    {
-      "id": "sum-14",
+      "id": "sum-16",
       "type": "sum",
       "label": "Summing Node",
-      "role": "sum-02",
+      "role": "sum-01",
       "position": {
         "x": 504,
         "y": 432
@@ -108,6 +91,25 @@
       "rotation": 0,
       "properties": {
         "equation": "+ -",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "transferFunction-17",
+      "type": "transferFunction",
+      "label": "Transfer Function",
+      "role": "tf-03",
+      "position": {
+        "x": 672,
+        "y": 432
+      },
+      "rotation": 0,
+      "properties": {
+        "numerator": "0 0.0015 -6.5765e-04",
+        "denominator": "1 -1.4601 0.4709",
+        "domain": "discrete",
+        "discreteVariable": "z",
+        "stateName": "x",
         "dataType": "f32"
       }
     }
@@ -121,39 +123,39 @@
       "targetPortId": "in"
     },
     {
-      "id": "xy-edge__step-11out-transferFunction-12in",
+      "id": "xy-edge__step-11out-gain-15in",
       "sourceNodeId": "step-11",
       "sourcePortId": "out",
-      "targetNodeId": "transferFunction-12",
+      "targetNodeId": "gain-15",
       "targetPortId": "in"
     },
     {
-      "id": "xy-edge__transferFunction-12out-sum-14a",
-      "sourceNodeId": "transferFunction-12",
+      "id": "xy-edge__gain-15out-sum-16a",
+      "sourceNodeId": "gain-15",
       "sourcePortId": "out",
-      "targetNodeId": "sum-14",
+      "targetNodeId": "sum-16",
       "targetPortId": "a"
     },
     {
-      "id": "xy-edge__transferFunction-13out-sum-14b",
-      "sourceNodeId": "transferFunction-13",
+      "id": "xy-edge__sum-16out-transferFunction-17in",
+      "sourceNodeId": "sum-16",
       "sourcePortId": "out",
-      "targetNodeId": "sum-14",
-      "targetPortId": "b"
+      "targetNodeId": "transferFunction-17",
+      "targetPortId": "in"
     },
     {
-      "id": "xy-edge__sum-14out-transferFunction-9in",
-      "sourceNodeId": "sum-14",
+      "id": "xy-edge__transferFunction-17out-transferFunction-9in",
+      "sourceNodeId": "transferFunction-17",
       "sourcePortId": "out",
       "targetNodeId": "transferFunction-9",
       "targetPortId": "in"
     },
     {
-      "id": "xy-edge__transferFunction-9out-transferFunction-13in",
+      "id": "xy-edge__transferFunction-9out-sum-16b",
       "sourceNodeId": "transferFunction-9",
       "sourcePortId": "out",
-      "targetNodeId": "transferFunction-13",
-      "targetPortId": "in"
+      "targetNodeId": "sum-16",
+      "targetPortId": "b"
     }
   ],
   "graphIndex": {
@@ -184,7 +186,28 @@
           "out"
         ]
       },
-      "transferFunction-12": {
+      "gain-15": {
+        "type": "gain",
+        "role": "gain-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "sum-16": {
+        "type": "sum",
+        "role": "sum-01",
+        "inputPortIds": [
+          "a",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "transferFunction-17": {
         "type": "transferFunction",
         "role": "tf-03",
         "inputPortIds": [
@@ -193,65 +216,44 @@
         "outputPortIds": [
           "out"
         ]
-      },
-      "transferFunction-13": {
-        "type": "transferFunction",
-        "role": "tf-04",
-        "inputPortIds": [
-          "in"
-        ],
-        "outputPortIds": [
-          "out"
-        ]
-      },
-      "sum-14": {
-        "type": "sum",
-        "role": "sum-02",
-        "inputPortIds": [
-          "a",
-          "b"
-        ],
-        "outputPortIds": [
-          "out"
-        ]
       }
     },
     "incomingEdgesByNodeId": {
       "transferFunction-9": [
-        "xy-edge__sum-14out-transferFunction-9in"
+        "xy-edge__transferFunction-17out-transferFunction-9in"
       ],
       "scope-10": [
         "xy-edge__transferFunction-9out-scope-10in"
       ],
       "step-11": [],
-      "transferFunction-12": [
-        "xy-edge__step-11out-transferFunction-12in"
+      "gain-15": [
+        "xy-edge__step-11out-gain-15in"
       ],
-      "transferFunction-13": [
-        "xy-edge__transferFunction-9out-transferFunction-13in"
+      "sum-16": [
+        "xy-edge__gain-15out-sum-16a",
+        "xy-edge__transferFunction-9out-sum-16b"
       ],
-      "sum-14": [
-        "xy-edge__transferFunction-12out-sum-14a",
-        "xy-edge__transferFunction-13out-sum-14b"
+      "transferFunction-17": [
+        "xy-edge__sum-16out-transferFunction-17in"
       ]
     },
     "outgoingEdgesByNodeId": {
       "transferFunction-9": [
         "xy-edge__transferFunction-9out-scope-10in",
-        "xy-edge__transferFunction-9out-transferFunction-13in"
+        "xy-edge__transferFunction-9out-sum-16b"
       ],
       "scope-10": [],
       "step-11": [
-        "xy-edge__step-11out-transferFunction-12in"
+        "xy-edge__step-11out-gain-15in"
       ],
-      "transferFunction-12": [
-        "xy-edge__transferFunction-12out-sum-14a"
+      "gain-15": [
+        "xy-edge__gain-15out-sum-16a"
       ],
-      "transferFunction-13": [
-        "xy-edge__transferFunction-13out-sum-14b"
+      "sum-16": [
+        "xy-edge__sum-16out-transferFunction-17in"
       ],
-      "sum-14": [
-        "xy-edge__sum-14out-transferFunction-9in"
+      "transferFunction-17": [
+        "xy-edge__transferFunction-17out-transferFunction-9in"
       ]
     }
   }

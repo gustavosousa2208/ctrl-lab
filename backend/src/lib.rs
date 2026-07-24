@@ -107,6 +107,18 @@ pub struct BlockBehavior {
     pub is_direct_feedthrough: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferFunctionDomain {
+    Continuous,
+    Discrete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscreteTransferFunctionVariable {
+    ZInverse,
+    Z,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SimulationError {
     Parse {
@@ -139,6 +151,14 @@ pub enum SimulationError {
     },
     InvalidTransferFunctionDenominator {
         node_id: NodeId,
+    },
+    InvalidTransferFunctionDomain {
+        node_id: NodeId,
+        value: String,
+    },
+    InvalidDiscreteTransferFunctionVariable {
+        node_id: NodeId,
+        value: String,
     },
     InvalidDelayTime {
         node_id: NodeId,
@@ -368,6 +388,18 @@ impl fmt::Display for SimulationError {
                 write!(
                     f,
                     "node `{node_id}` has an invalid transfer function denominator leading coefficient"
+                )
+            }
+            Self::InvalidTransferFunctionDomain { node_id, value } => {
+                write!(
+                    f,
+                    "node `{node_id}` has invalid transfer function domain `{value}`; expected `continuous` or `discrete`"
+                )
+            }
+            Self::InvalidDiscreteTransferFunctionVariable { node_id, value } => {
+                write!(
+                    f,
+                    "node `{node_id}` has invalid discrete transfer variable `{value}`; expected `z^-1` or `z`"
                 )
             }
             Self::InvalidDelayTime { node_id, delay_time } => {
@@ -727,10 +759,11 @@ pub fn simulate_validated_dag(dag: &ValidatedDag) -> Result<SimulationOutput, Si
             delay_state.insert(node.id.clone(), initialize_delay_state(node, step_size)?);
         }
         if node.node_type == "transferFunction" {
-            let model = parse_transfer_function(node)?;
-            transfer_function_models.insert(node.id.clone(), model.clone());
+            let spec = parse_transfer_function(node)?;
+            let model = TransferFunctionModel::from_spec(&spec, step_size);
             transfer_function_state
                 .insert(node.id.clone(), TransferFunctionState::from_model(&model));
+            transfer_function_models.insert(node.id.clone(), model);
         }
     }
 
@@ -894,9 +927,12 @@ pub fn simulate_validated_dag(dag: &ValidatedDag) -> Result<SimulationOutput, Si
                     let model = transfer_function_models
                         .get(node_id)
                         .expect("transfer function model must exist");
+                    let current_output = *current_values
+                        .get(node_id)
+                        .expect("transfer function output must exist in current step");
                     next_transfer_function_state.insert(
                         node_id.clone(),
-                        model.next_state(&current_state, input, step_size),
+                        model.next_state(&current_state, input, current_output, step_size),
                     );
                 }
             }
@@ -976,38 +1012,15 @@ fn infer_block_behavior(node: &SerializedNode) -> BlockBehavior {
         return block_behavior(&node.node_type);
     }
 
-    match inspect_transfer_function_orders(node) {
-        Some((numerator_len, denominator_len)) => BlockBehavior {
+    match parse_transfer_function(node) {
+        Ok(spec) => BlockBehavior {
             is_stateful: true,
-            is_direct_feedthrough: numerator_len >= denominator_len,
+            is_direct_feedthrough: spec.is_direct_feedthrough(),
         },
-        None => BlockBehavior {
+        Err(_) => BlockBehavior {
             is_stateful: true,
             is_direct_feedthrough: true,
         },
-    }
-}
-
-fn inspect_transfer_function_orders(node: &SerializedNode) -> Option<(usize, usize)> {
-    let numerator = parse_numeric_list_property_for_behavior(node.properties.get("numerator")?)?;
-    let denominator =
-        parse_numeric_list_property_for_behavior(node.properties.get("denominator")?)?;
-    Some((numerator.len(), denominator.len()))
-}
-
-fn parse_numeric_list_property_for_behavior(raw_value: &str) -> Option<Vec<f64>> {
-    let mut values = Vec::new();
-    for token in raw_value
-        .split(|character: char| character.is_whitespace() || character == ',')
-        .filter(|token| !token.is_empty())
-    {
-        values.push(token.parse::<f64>().ok()?);
-    }
-
-    if values.is_empty() {
-        None
-    } else {
-        Some(values)
     }
 }
 
@@ -1138,29 +1151,89 @@ fn initialize_delay_state(
     })
 }
 
+/// Sample-time-free description of a transfer-function block, produced at parse
+/// time. Continuous specs carry a continuous state space; discrete specs carry
+/// the difference equation directly. Turned into a simulation-ready
+/// [`TransferFunctionModel`] once the step size is known.
+#[derive(Debug, Clone)]
+enum TransferFunctionSpec {
+    Continuous(ContinuousStateSpace),
+    Discrete(DiscreteTransferFunction),
+}
+
+impl TransferFunctionSpec {
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn settings(&self) -> TransferFunctionSettings {
+        match self {
+            Self::Continuous(model) => model.settings,
+            Self::Discrete(model) => model.settings,
+        }
+    }
+
+    /// Whether the block's current output depends on its current input (D != 0).
+    /// Structural, so it can be decided at parse time without a step size.
+    fn is_direct_feedthrough(&self) -> bool {
+        match self {
+            Self::Continuous(model) => model.d.abs() > f64::EPSILON,
+            Self::Discrete(model) => model.direct_gain.abs() > f64::EPSILON,
+        }
+    }
+}
+
+/// Simulation-ready model, valid for one fixed step size. Continuous specs are
+/// ZOH-discretized into a discrete state space; discrete specs run their
+/// `z^-1` difference equation directly.
 #[derive(Debug, Clone)]
 enum TransferFunctionModel {
-    FirstOrder(FirstOrderTransferFunction),
-    SecondOrder(SecondOrderTransferFunction),
+    ContinuousZoh(DiscreteStateSpace),
+    Discrete(DiscreteTransferFunction),
 }
 
 impl TransferFunctionModel {
+    fn from_spec(spec: &TransferFunctionSpec, step_size: f64) -> Self {
+        match spec {
+            TransferFunctionSpec::Continuous(ss) => Self::ContinuousZoh(ss.zoh_discretize(step_size)),
+            TransferFunctionSpec::Discrete(model) => Self::Discrete(model.clone()),
+        }
+    }
+
     fn output_requires_input(&self) -> bool {
         match self {
-            Self::FirstOrder(model) => model.direct_gain.abs() > f64::EPSILON,
-            Self::SecondOrder(_) => false,
+            Self::ContinuousZoh(ss) => ss.d.abs() > f64::EPSILON,
+            Self::Discrete(model) => model.direct_gain.abs() > f64::EPSILON,
         }
     }
 
     fn output(&self, state: &TransferFunctionState, input: f64) -> f64 {
         match (self, state) {
-            (Self::FirstOrder(model), TransferFunctionState::FirstOrder { output }) => {
-                model.direct_gain * input + *output
+            (Self::ContinuousZoh(ss), TransferFunctionState::ContinuousZoh { x }) => {
+                let mut output = ss.d * input;
+                for (gain, state_value) in ss.c.iter().zip(x.iter()) {
+                    output += gain * state_value;
+                }
+                output
             }
-            (
-                Self::SecondOrder(model),
-                TransferFunctionState::SecondOrder { position, velocity },
-            ) => model.output_position_gain * *position + model.output_velocity_gain * *velocity,
+            (Self::Discrete(model), TransferFunctionState::Discrete(state)) => {
+                let mut output = model.direct_gain * input;
+                for (coefficient, previous_input) in model
+                    .normalized_numerator
+                    .iter()
+                    .skip(1)
+                    .zip(state.past_inputs.iter())
+                {
+                    output += coefficient * previous_input;
+                }
+                for (coefficient, previous_output) in model
+                    .normalized_denominator
+                    .iter()
+                    .skip(1)
+                    .zip(state.past_outputs.iter())
+                {
+                    output -= coefficient * previous_output;
+                }
+
+                output / model.normalized_denominator[0]
+            }
             _ => unreachable!("transfer function model and state must match"),
         }
     }
@@ -1169,31 +1242,34 @@ impl TransferFunctionModel {
         &self,
         current_state: &TransferFunctionState,
         input: f64,
-        step_size: f64,
+        current_output: f64,
+        _step_size: f64,
     ) -> TransferFunctionState {
         match (self, current_state) {
-            (Self::FirstOrder(model), TransferFunctionState::FirstOrder { output }) => {
-                TransferFunctionState::FirstOrder {
-                    output: *output
-                        + step_size
-                            * ((model.dynamic_numerator_gain * input
-                                - model.output_gain * *output)
-                                / model.derivative_gain),
+            (Self::ContinuousZoh(ss), TransferFunctionState::ContinuousZoh { x }) => {
+                // x[k+1] = Ad x[k] + Bd u[k]
+                let order = x.len();
+                let mut next = vec![0.0; order];
+                for (row, next_value) in next.iter_mut().enumerate() {
+                    let mut accumulator = ss.bd[row] * input;
+                    for (column, state_value) in x.iter().enumerate() {
+                        accumulator += ss.ad[row][column] * state_value;
+                    }
+                    *next_value = accumulator;
                 }
+                TransferFunctionState::ContinuousZoh { x: next }
             }
-            (
-                Self::SecondOrder(model),
-                TransferFunctionState::SecondOrder { position, velocity },
-            ) => {
-                let position_dot = *velocity;
-                let velocity_dot =
-                    (-model.position_gain * *position - model.velocity_gain * *velocity + input)
-                        / model.acceleration_gain;
-
-                TransferFunctionState::SecondOrder {
-                    position: *position + step_size * position_dot,
-                    velocity: *velocity + step_size * velocity_dot,
+            (Self::Discrete(_model), TransferFunctionState::Discrete(state)) => {
+                let mut next_state = state.clone();
+                if !next_state.past_inputs.is_empty() {
+                    let _ = next_state.past_inputs.pop_back();
+                    next_state.past_inputs.push_front(input);
                 }
+                if !next_state.past_outputs.is_empty() {
+                    let _ = next_state.past_outputs.pop_back();
+                    next_state.past_outputs.push_front(current_output);
+                }
+                TransferFunctionState::Discrete(next_state)
             }
             _ => unreachable!("transfer function model and state must match"),
         }
@@ -1202,37 +1278,90 @@ impl TransferFunctionModel {
 
 #[derive(Debug, Clone)]
 enum TransferFunctionState {
-    FirstOrder { output: f64 },
-    SecondOrder { position: f64, velocity: f64 },
+    ContinuousZoh { x: Vec<f64> },
+    Discrete(DiscreteTransferFunctionState),
 }
 
 impl TransferFunctionState {
     fn from_model(model: &TransferFunctionModel) -> Self {
         match model {
-            TransferFunctionModel::FirstOrder(_) => Self::FirstOrder { output: 0.0 },
-            TransferFunctionModel::SecondOrder(_) => Self::SecondOrder {
-                position: 0.0,
-                velocity: 0.0,
+            TransferFunctionModel::ContinuousZoh(ss) => Self::ContinuousZoh {
+                x: vec![0.0; ss.c.len()],
             },
+            TransferFunctionModel::Discrete(model) => Self::Discrete(DiscreteTransferFunctionState {
+                past_inputs: VecDeque::from(vec![
+                    0.0;
+                    model.normalized_numerator.len().saturating_sub(1)
+                ]),
+                past_outputs: VecDeque::from(vec![
+                    0.0;
+                    model.normalized_denominator.len().saturating_sub(1)
+                ]),
+            }),
         }
     }
 }
 
-#[derive(Debug, Clone)]
-struct FirstOrderTransferFunction {
-    derivative_gain: f64,
-    output_gain: f64,
-    dynamic_numerator_gain: f64,
-    direct_gain: f64,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TransferFunctionSettings {
+    domain: TransferFunctionDomain,
+    discrete_variable: DiscreteTransferFunctionVariable,
 }
 
+/// Continuous-time controllable-canonical state space:
+/// `dx/dt = A x + B u`, `y = C x + D u`. Sample-time free.
 #[derive(Debug, Clone)]
-struct SecondOrderTransferFunction {
-    acceleration_gain: f64,
-    velocity_gain: f64,
-    position_gain: f64,
-    output_position_gain: f64,
-    output_velocity_gain: f64,
+struct ContinuousStateSpace {
+    #[cfg_attr(not(test), allow(dead_code))]
+    settings: TransferFunctionSettings,
+    a: Vec<Vec<f64>>,
+    b: Vec<f64>,
+    c: Vec<f64>,
+    d: f64,
+}
+
+impl ContinuousStateSpace {
+    /// Exact zero-order-hold discretization at `ts`, matching
+    /// MATLAB `c2d(sys, ts, 'zoh')`. Uses the augmented matrix exponential
+    /// `exp([[A, B], [0, 0]] * ts) = [[Ad, Bd], [0, 1]]`, which avoids inverting
+    /// `A` and stays correct even when `A` has an eigenvalue at the origin.
+    fn zoh_discretize(&self, ts: f64) -> DiscreteStateSpace {
+        let order = self.b.len();
+        let mut augmented = vec![vec![0.0; order + 1]; order + 1];
+        for row in 0..order {
+            for column in 0..order {
+                augmented[row][column] = self.a[row][column] * ts;
+            }
+            augmented[row][order] = self.b[row] * ts;
+        }
+        let exponential = matrix_exponential(&augmented);
+
+        let mut ad = vec![vec![0.0; order]; order];
+        let mut bd = vec![0.0; order];
+        for row in 0..order {
+            for column in 0..order {
+                ad[row][column] = exponential[row][column];
+            }
+            bd[row] = exponential[row][order];
+        }
+
+        DiscreteStateSpace {
+            ad,
+            bd,
+            c: self.c.clone(),
+            d: self.d,
+        }
+    }
+}
+
+/// Discrete state space produced by ZOH discretization:
+/// `x[k+1] = Ad x[k] + Bd u[k]`, `y[k] = C x[k] + D u[k]`.
+#[derive(Debug, Clone)]
+struct DiscreteStateSpace {
+    ad: Vec<Vec<f64>>,
+    bd: Vec<f64>,
+    c: Vec<f64>,
+    d: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -1242,85 +1371,268 @@ struct DelayState {
     buffered_values: VecDeque<f64>,
 }
 
+#[derive(Debug, Clone)]
+struct DiscreteTransferFunction {
+    #[cfg_attr(not(test), allow(dead_code))]
+    settings: TransferFunctionSettings,
+    normalized_numerator: Vec<f64>,
+    normalized_denominator: Vec<f64>,
+    direct_gain: f64,
+}
+
+#[derive(Debug, Clone)]
+struct DiscreteTransferFunctionState {
+    past_inputs: VecDeque<f64>,
+    past_outputs: VecDeque<f64>,
+}
+
 fn parse_transfer_function(
     node: &SerializedNode,
-) -> Result<TransferFunctionModel, SimulationError> {
+) -> Result<TransferFunctionSpec, SimulationError> {
+    let settings = parse_transfer_function_settings(node)?;
     let numerator = parse_numeric_list_property(node, "numerator")?;
     let denominator = parse_numeric_list_property(node, "denominator")?;
 
-    match (numerator.len(), denominator.len()) {
-        (1, 2) => {
-            let derivative_gain = denominator[0];
-            if !derivative_gain.is_finite() || derivative_gain.abs() <= f64::EPSILON {
-                return Err(SimulationError::InvalidTransferFunctionDenominator {
-                    node_id: node.id.clone(),
-                });
-            }
+    if settings.domain == TransferFunctionDomain::Discrete {
+        return parse_discrete_transfer_function(node, settings, numerator, denominator);
+    }
 
-            Ok(TransferFunctionModel::FirstOrder(
-                FirstOrderTransferFunction {
-                    derivative_gain,
-                    output_gain: denominator[1],
-                    dynamic_numerator_gain: numerator[0],
-                    direct_gain: 0.0,
-                },
-            ))
-        }
-        (2, 2) => {
-            let derivative_gain = denominator[0];
-            if !derivative_gain.is_finite() || derivative_gain.abs() <= f64::EPSILON {
-                return Err(SimulationError::InvalidTransferFunctionDenominator {
-                    node_id: node.id.clone(),
-                });
-            }
+    build_continuous_state_space(node, settings, numerator, denominator)
+        .map(TransferFunctionSpec::Continuous)
+}
 
-            let direct_gain = numerator[0] / derivative_gain;
-            let dynamic_numerator_gain = numerator[1] - denominator[1] * direct_gain;
-
-            Ok(TransferFunctionModel::FirstOrder(
-                FirstOrderTransferFunction {
-                    derivative_gain,
-                    output_gain: denominator[1],
-                    dynamic_numerator_gain,
-                    direct_gain,
-                },
-            ))
-        }
-        (1 | 2, 3) => {
-            let acceleration_gain = denominator[0];
-            if !acceleration_gain.is_finite() || acceleration_gain.abs() <= f64::EPSILON {
-                return Err(SimulationError::InvalidTransferFunctionDenominator {
-                    node_id: node.id.clone(),
-                });
-            }
-
-            let velocity_gain = denominator[1];
-            let position_gain = denominator[2];
-            let output_velocity_gain = if numerator.len() == 2 {
-                numerator[0] / acceleration_gain
-            } else {
-                0.0
-            };
-            let output_position_gain = if numerator.len() == 2 {
-                numerator[1] / acceleration_gain
-            } else {
-                numerator[0] / acceleration_gain
-            };
-
-            Ok(TransferFunctionModel::SecondOrder(
-                SecondOrderTransferFunction {
-                    acceleration_gain,
-                    velocity_gain,
-                    position_gain,
-                    output_position_gain,
-                    output_velocity_gain,
-                },
-            ))
-        }
-        _ => Err(SimulationError::UnsupportedTransferFunctionShape {
+/// Builds a continuous controllable-canonical state space from an s-domain
+/// transfer function written highest power first. Supports first- and
+/// second-order denominators with a proper numerator (deg num <= deg den).
+fn build_continuous_state_space(
+    node: &SerializedNode,
+    settings: TransferFunctionSettings,
+    numerator: Vec<f64>,
+    denominator: Vec<f64>,
+) -> Result<ContinuousStateSpace, SimulationError> {
+    if !(2..=3).contains(&denominator.len()) || numerator.len() > denominator.len() {
+        return Err(SimulationError::UnsupportedTransferFunctionShape {
             node_id: node.id.clone(),
             numerator_len: numerator.len(),
             denominator_len: denominator.len(),
+        });
+    }
+
+    let leading = denominator[0];
+    if !leading.is_finite() || leading.abs() <= f64::EPSILON {
+        return Err(SimulationError::InvalidTransferFunctionDenominator {
+            node_id: node.id.clone(),
+        });
+    }
+
+    let order = denominator.len() - 1; // 1 or 2
+
+    // Monic denominator: a[0] = 1, a[i] = den[i] / den[0].
+    let a_norm: Vec<f64> = denominator.iter().map(|value| value / leading).collect();
+
+    // Numerator left-padded to length order + 1 (highest power first), normalized.
+    let mut b = vec![0.0; (order + 1) - numerator.len()];
+    b.extend(numerator.iter().map(|value| value / leading));
+
+    // Direct term D is the coefficient of s^order in the proper numerator.
+    let d = b[0];
+
+    // Strictly-proper remainder beta_i = b_i - D * a_i for i = 1..=order;
+    // beta[0] is beta_1 (the s^(order-1) coefficient).
+    let beta: Vec<f64> = (1..=order).map(|i| b[i] - d * a_norm[i]).collect();
+
+    // Controllable canonical form.
+    let mut a = vec![vec![0.0; order]; order];
+    for row in 0..order.saturating_sub(1) {
+        a[row][row + 1] = 1.0;
+    }
+    for column in 0..order {
+        a[order - 1][column] = -a_norm[order - column];
+    }
+
+    let mut b_vector = vec![0.0; order];
+    b_vector[order - 1] = 1.0;
+
+    // C = [beta_order, beta_(order-1), ..., beta_1].
+    let c: Vec<f64> = (0..order).map(|k| beta[order - 1 - k]).collect();
+
+    Ok(ContinuousStateSpace {
+        settings,
+        a,
+        b: b_vector,
+        c,
+        d,
+    })
+}
+
+fn parse_discrete_transfer_function(
+    node: &SerializedNode,
+    settings: TransferFunctionSettings,
+    numerator: Vec<f64>,
+    denominator: Vec<f64>,
+) -> Result<TransferFunctionSpec, SimulationError> {
+    let (normalized_numerator, normalized_denominator) =
+        normalize_discrete_transfer_function_coefficients(
+            settings.discrete_variable,
+            numerator,
+            denominator,
+        );
+    let leading_denominator = normalized_denominator[0];
+    if !leading_denominator.is_finite() || leading_denominator.abs() <= f64::EPSILON {
+        return Err(SimulationError::InvalidTransferFunctionDenominator {
+            node_id: node.id.clone(),
+        });
+    }
+
+    let direct_gain = normalized_numerator.first().copied().unwrap_or(0.0);
+
+    Ok(TransferFunctionSpec::Discrete(DiscreteTransferFunction {
+        settings,
+        normalized_numerator,
+        normalized_denominator,
+        direct_gain,
+    }))
+}
+
+/// Dense matrix exponential via scaling-and-squaring with an incremental Taylor
+/// series. Sized for the tiny (<= 3x3) augmented matrices used in ZOH
+/// discretization, so accuracy — not speed — is the priority.
+fn matrix_exponential(matrix: &[Vec<f64>]) -> Vec<Vec<f64>> {
+    let n = matrix.len();
+
+    // Scale so the matrix norm is small enough for rapid Taylor convergence.
+    let norm = matrix
+        .iter()
+        .map(|row| row.iter().map(|value| value.abs()).sum::<f64>())
+        .fold(0.0_f64, f64::max);
+    let mut squarings = 0u32;
+    while squarings < 30 && norm / f64::from(1u32 << squarings) > 0.5 {
+        squarings += 1;
+    }
+    let scale = 1.0 / f64::from(1u32 << squarings);
+    let scaled: Vec<Vec<f64>> = matrix
+        .iter()
+        .map(|row| row.iter().map(|value| value * scale).collect())
+        .collect();
+
+    // exp(M) = sum_{k>=0} M^k / k!, accumulated term by term.
+    let mut result = matrix_identity(n);
+    let mut term = matrix_identity(n);
+    for k in 1..=18u32 {
+        term = matrix_multiply(&term, &scaled);
+        let divisor = f64::from(k);
+        for row in term.iter_mut() {
+            for value in row.iter_mut() {
+                *value /= divisor;
+            }
+        }
+        for row in 0..n {
+            for column in 0..n {
+                result[row][column] += term[row][column];
+            }
+        }
+    }
+
+    // Undo scaling: exp(M) = (exp(M / 2^s))^(2^s).
+    for _ in 0..squarings {
+        result = matrix_multiply(&result, &result);
+    }
+    result
+}
+
+fn matrix_identity(n: usize) -> Vec<Vec<f64>> {
+    let mut matrix = vec![vec![0.0; n]; n];
+    for (index, row) in matrix.iter_mut().enumerate() {
+        row[index] = 1.0;
+    }
+    matrix
+}
+
+fn matrix_multiply(a: &[Vec<f64>], b: &[Vec<f64>]) -> Vec<Vec<f64>> {
+    let n = a.len();
+    let mut result = vec![vec![0.0; n]; n];
+    for i in 0..n {
+        for k in 0..n {
+            let a_ik = a[i][k];
+            if a_ik == 0.0 {
+                continue;
+            }
+            for j in 0..n {
+                result[i][j] += a_ik * b[k][j];
+            }
+        }
+    }
+    result
+}
+
+fn normalize_discrete_transfer_function_coefficients(
+    variable: DiscreteTransferFunctionVariable,
+    numerator: Vec<f64>,
+    denominator: Vec<f64>,
+) -> (Vec<f64>, Vec<f64>) {
+    match variable {
+        DiscreteTransferFunctionVariable::ZInverse => (numerator, denominator),
+        DiscreteTransferFunctionVariable::Z => {
+            let common_len = numerator.len().max(denominator.len());
+            let mut normalized_numerator = vec![0.0; common_len - numerator.len()];
+            normalized_numerator.extend(numerator);
+
+            let mut normalized_denominator = vec![0.0; common_len - denominator.len()];
+            normalized_denominator.extend(denominator);
+
+            (normalized_numerator, normalized_denominator)
+        }
+    }
+}
+
+fn parse_transfer_function_settings(
+    node: &SerializedNode,
+) -> Result<TransferFunctionSettings, SimulationError> {
+    let domain = parse_transfer_function_domain(node)?;
+    let discrete_variable = parse_discrete_transfer_function_variable(node)?;
+
+    Ok(TransferFunctionSettings {
+        domain,
+        discrete_variable,
+    })
+}
+
+fn parse_transfer_function_domain(
+    node: &SerializedNode,
+) -> Result<TransferFunctionDomain, SimulationError> {
+    let raw_value = node
+        .properties
+        .get("domain")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("continuous");
+
+    match raw_value {
+        "continuous" => Ok(TransferFunctionDomain::Continuous),
+        "discrete" => Ok(TransferFunctionDomain::Discrete),
+        _ => Err(SimulationError::InvalidTransferFunctionDomain {
+            node_id: node.id.clone(),
+            value: raw_value.to_string(),
+        }),
+    }
+}
+
+fn parse_discrete_transfer_function_variable(
+    node: &SerializedNode,
+) -> Result<DiscreteTransferFunctionVariable, SimulationError> {
+    let raw_value = node
+        .properties
+        .get("discreteVariable")
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("z");
+
+    match raw_value {
+        "z^-1" => Ok(DiscreteTransferFunctionVariable::ZInverse),
+        "z" => Ok(DiscreteTransferFunctionVariable::Z),
+        _ => Err(SimulationError::InvalidDiscreteTransferFunctionVariable {
+            node_id: node.id.clone(),
+            value: raw_value.to_string(),
         }),
     }
 }
@@ -2434,10 +2746,14 @@ mod tests {
     }
 
     fn assert_approx_eq(left: f64, right: f64) {
+        assert_approx_eq_tol(left, right, 1e-9);
+    }
+
+    fn assert_approx_eq_tol(left: f64, right: f64, tolerance: f64) {
         let delta = (left - right).abs();
         assert!(
-            delta <= 1e-9,
-            "expected {left} to be within tolerance of {right}, delta was {delta}"
+            delta <= tolerance,
+            "expected {left} to be within {tolerance} of {right}, delta was {delta}"
         );
     }
 
@@ -2497,10 +2813,12 @@ mod tests {
             .get("scope-3")
             .expect("scope trace must exist");
 
+        // ZOH-discretized 1/(s+1): exact continuous step response 1 - e^-t at
+        // the sample instants (matches MATLAB c2d(sys, 0.1, 'zoh')).
         assert_approx_eq(tf.first().copied().unwrap(), 0.0);
-        assert_approx_eq(tf.get(1).copied().unwrap(), 0.1);
-        assert_approx_eq(*tf.last().unwrap(), 0.6513215599);
-        assert_approx_eq(*scope.last().unwrap(), 0.6513215599);
+        assert_approx_eq(tf.get(1).copied().unwrap(), 0.0951625820);
+        assert_approx_eq(*tf.last().unwrap(), 0.6321205588);
+        assert_approx_eq(*scope.last().unwrap(), 0.6321205588);
     }
 
     #[test]
@@ -2527,6 +2845,84 @@ mod tests {
     }
 
     #[test]
+    fn transfer_function_defaults_to_continuous_z_metadata() {
+        let value = transfer_function_fixture_value();
+        let node: SerializedNode =
+            serde_json::from_value(value["nodes"][1].clone()).expect("node must deserialize");
+
+        let model = parse_transfer_function(&node).expect("transfer function should parse");
+
+        assert_eq!(
+            model.settings(),
+            TransferFunctionSettings {
+                domain: TransferFunctionDomain::Continuous,
+                discrete_variable: DiscreteTransferFunctionVariable::Z,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_explicit_discrete_transfer_function_metadata() {
+        let mut value = transfer_function_fixture_value();
+        value["nodes"][1]["properties"]["domain"] = json!("discrete");
+        value["nodes"][1]["properties"]["discreteVariable"] = json!("z");
+        let node: SerializedNode =
+            serde_json::from_value(value["nodes"][1].clone()).expect("node must deserialize");
+
+        let model = parse_transfer_function(&node).expect("transfer function should parse");
+
+        assert_eq!(
+            model.settings(),
+            TransferFunctionSettings {
+                domain: TransferFunctionDomain::Discrete,
+                discrete_variable: DiscreteTransferFunctionVariable::Z,
+            }
+        );
+    }
+
+    #[test]
+    fn simulates_discrete_first_order_transfer_function_in_z_inverse_form() {
+        let mut value = transfer_function_fixture_value();
+        value["nodes"][1]["properties"]["domain"] = json!("discrete");
+        value["nodes"][1]["properties"]["discreteVariable"] = json!("z^-1");
+
+        let dag = parse_value(value).expect("discrete z^-1 transfer function should parse");
+        let simulation = simulate_validated_dag(&dag)
+            .expect("discrete z^-1 transfer function should simulate");
+
+        let tf = simulation
+            .values_by_node_id
+            .get("transferFunction-2")
+            .expect("transfer function trace must exist");
+
+        assert_approx_eq(tf[0], 1.0);
+        assert_approx_eq(tf[1], 0.0);
+        assert_approx_eq(tf[2], 1.0);
+        assert_approx_eq(tf[3], 0.0);
+    }
+
+    #[test]
+    fn simulates_discrete_first_order_transfer_function_in_z_form() {
+        let mut value = transfer_function_fixture_value();
+        value["nodes"][1]["properties"]["domain"] = json!("discrete");
+        value["nodes"][1]["properties"]["discreteVariable"] = json!("z");
+
+        let dag = parse_value(value).expect("discrete z transfer function should parse");
+        let simulation =
+            simulate_validated_dag(&dag).expect("discrete z transfer function should simulate");
+
+        let tf = simulation
+            .values_by_node_id
+            .get("transferFunction-2")
+            .expect("transfer function trace must exist");
+
+        assert_approx_eq(tf[0], 0.0);
+        assert_approx_eq(tf[1], 1.0);
+        assert_approx_eq(tf[2], 0.0);
+        assert_approx_eq(tf[3], 1.0);
+    }
+
+    #[test]
     fn simulates_second_order_system_fixture_with_strictly_proper_feedback() {
         let dag = parse_project_json(&second_order_system_fixture_json())
             .expect("second-order system fixture should parse");
@@ -2542,11 +2938,19 @@ mod tests {
             .get("scope-10")
             .expect("scope-10 trace must exist");
 
-        assert_eq!(simulation.times.len(), 101);
+        // endTime 25, stepSize 0.05 -> 501 samples.
+        assert_eq!(simulation.times.len(), 501);
         assert_eq!(tf.len(), simulation.times.len());
         assert_eq!(scope.len(), simulation.times.len());
         assert!(tf.iter().all(|value| value.is_finite()));
         assert!(scope.iter().all(|value| value.is_finite()));
+
+        // Stable closed loop: bounded, and settling toward the analytic DC gain
+        // L(1)/(1+L(1)) = 0.3917. The final sample matches an independent
+        // difference-equation reference computed outside this engine.
+        assert!(tf.iter().all(|value| value.abs() < 2.0));
+        assert_approx_eq_tol(*tf.last().unwrap(), 0.3879350696, 1e-6);
+        assert_approx_eq_tol(*scope.last().unwrap(), 0.3879350696, 1e-6);
     }
 
     #[test]
@@ -2567,12 +2971,14 @@ mod tests {
             .get("scope-3")
             .expect("scope trace must exist");
 
+        // ZOH-discretized 1/(s^2+s+1): matches MATLAB c2d(sys, 0.1, 'zoh') and
+        // the exact continuous step response at the sample instants.
         assert_approx_eq(tf[0], 0.0);
-        assert_approx_eq(tf[1], 0.0);
-        assert_approx_eq(tf[2], 0.01);
-        assert_approx_eq(tf[3], 0.029);
-        assert_approx_eq(*tf.last().unwrap(), 0.33231044);
-        assert_approx_eq(*scope.last().unwrap(), 0.33231044);
+        assert_approx_eq(tf[1], 0.0048334153);
+        assert_approx_eq(tf[2], 0.0186692445);
+        assert_approx_eq(tf[3], 0.0405192391);
+        assert_approx_eq(*tf.last().unwrap(), 0.3402998466);
+        assert_approx_eq(*scope.last().unwrap(), 0.3402998466);
     }
 
     #[test]
@@ -2590,10 +2996,11 @@ mod tests {
             .get("transferFunction-2")
             .expect("transfer function trace must exist");
 
+        // ZOH-discretized (s+1)/(s^2+s+1), matches MATLAB c2d(sys, 0.1, 'zoh').
         assert_approx_eq(tf[0], 0.0);
-        assert_approx_eq(tf[1], 0.1);
-        assert_approx_eq(tf[2], 0.2);
-        assert_approx_eq(*tf.last().unwrap(), 0.9008019901);
+        assert_approx_eq(tf[1], 0.0998374986);
+        assert_approx_eq(tf[2], 0.1987332470);
+        assert_approx_eq(*tf.last().unwrap(), 0.8738070417);
     }
 
     #[test]
@@ -2812,6 +3219,36 @@ mod tests {
                 node_id: "transferFunction-2".to_string(),
                 property: "numerator".to_string(),
                 value: "1.0 nope".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_transfer_function_domain() {
+        let mut value = transfer_function_fixture_value();
+        value["nodes"][1]["properties"]["domain"] = json!("hybrid");
+
+        let dag = parse_value(value).expect("graph shape should still validate");
+        assert_eq!(
+            simulate_validated_dag(&dag),
+            Err(SimulationError::InvalidTransferFunctionDomain {
+                node_id: "transferFunction-2".to_string(),
+                value: "hybrid".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_discrete_transfer_function_variable() {
+        let mut value = transfer_function_fixture_value();
+        value["nodes"][1]["properties"]["discreteVariable"] = json!("q");
+
+        let dag = parse_value(value).expect("graph shape should still validate");
+        assert_eq!(
+            simulate_validated_dag(&dag),
+            Err(SimulationError::InvalidDiscreteTransferFunctionVariable {
+                node_id: "transferFunction-2".to_string(),
+                value: "q".to_string(),
             })
         );
     }
