@@ -50,15 +50,19 @@ skew, and you will burn days guessing.
 
 The repo and backend live on Windows; Zephyr and the boards live on the Mac
 (`remote-macos-gusta-mac`). The backend is pure Rust + serde, so it builds on
-macOS too. Simplest arrangement:
+macOS too. Arrangement:
 
 - Mac clones this repo from GitHub, builds `firmware/`, flashes both boards, and
   runs the host-side comparison tools locally against the attached hardware.
 - Windows stays the editor/UI machine.
 - Everything crossing between them goes through git, not file sync.
 
-Fix the SSH known-hosts gap first (see the note in the session that produced this
-file) or the Mac is unreachable from the Windows box.
+The Mac's Zephyr environment has been surveyed — see
+[`firmware/ZEPHYR-WORKSPACE.md`](firmware/ZEPHYR-WORKSPACE.md). Zephyr v4.3.0,
+SDK 0.17.4, `nucleo_g474re` supported. Two things to know before building there:
+it is a **shared work workspace** carrying ten uncommitted patches in the Zephyr
+tree (nine are STM32N6-guarded and cannot affect G4), and `west` lives in a venv
+that is not on the non-interactive SSH `PATH`.
 
 ## Stage C — host plan executor (no hardware)
 
