@@ -10,7 +10,7 @@ Recovery snapshot. Refresh this file rather than starting a new one.
 | Working tree at snapshot | **already dirty** — that work is now committed, see [Recently landed](#recently-landed) |
 | HEAD after recovery | `bfaa9c6` |
 | Remote | `origin` = `git@github.com:gustavosousa2208/ctrl-lab.git` |
-| Other branches | `origin/rst-impl` — diverged at `4b3695e`, superseded (see below) |
+| Other branches | none — `origin/rst-impl` was salvaged and deleted (see below) |
 | Stashes / tags / worktrees | none |
 
 Evidence tags below: **[V]** verified by running or reading code, **[I]**
@@ -149,12 +149,17 @@ transfer-function implementation using `VecDeque` history buffers) was
 via state space with ZOH and golden tests. Do not merge the backend half.
 **[V — diffed both]**
 
-It does carry two files that never reached `main` and still have value: a root
-`README.md` and a root `package.json` defining workspace scripts (`bun run dev`,
-`bun run tauri:dev`, `setup`, `backend:build`, …). **[V]** The new root
-`README.md` written by this recovery documents the equivalent commands directly,
-so the branch is now only needed if you want those script shortcuts — that is a
-cherry-pick of `e6d0da6 -- package.json`. **Undecided; left alone.**
+It carried two files that never reached `main`: a root `README.md` and a root
+`package.json` of workspace scripts. **[V]** Both have been recovered — the root
+`README.md` was rewritten from scratch by this recovery, and the root
+`package.json` was taken from the branch verbatim and committed. The branch was
+then deleted from the remote, since everything of value on it had either been
+superseded or salvaged.
+
+Its last commit was **`e6d0da6`** (2026-04-13). Recorded here so the superseded
+discrete-TF implementation can still be retrieved if it is ever wanted:
+`git show e6d0da6` works from any clone that fetched the branch before deletion,
+and GitHub retains unreferenced objects for a period after branch deletion.
 
 ## Documentation state
 
@@ -206,24 +211,22 @@ Immediate (restore a clean, shareable state):
 1. Run the `frontend/AGENTS.md` manual checklist against `bfaa9c6` in the
    running desktop app. It is the one thing committed here that no automated
    check covers.
-2. Decide `origin/rst-impl`: cherry-pick its root `package.json` if you want the
-   workspace scripts, then delete the branch so it stops reading as live work.
 
 Then (unblock firmware):
 
-3. Give the plan a caller — a `--emit-plan <out.dcp>` flag on `ctrl-backend` is
+2. Give the plan a caller — a `--emit-plan <out.dcp>` flag on `ctrl-backend` is
    the smallest useful one — so plans can be inspected outside a unit test.
-4. Reconcile `firmware/AGENTS.md` with `plan.rs`: pick state-space or biquad-SOS
+3. Reconcile `firmware/AGENTS.md` with `plan.rs`: pick state-space or biquad-SOS
    for the transfer-function kernel, and settle `io_bindings` and
    `wcet_estimate_ns`.
-5. Document the RST equation form (`TODO.md` "Now").
+4. Document the RST equation form (`TODO.md` "Now").
 
 Later (quality):
 
-6. Frontend `graphIndex` consistency checks (`TODO.md`).
-7. Extend golden coverage to internal controller states, and add the
+5. Frontend `graphIndex` consistency checks (`TODO.md`).
+6. Extend golden coverage to internal controller states, and add the
    step/ramp/disturbance/noise/reset cases listed in `TODO.md`.
-8. Make `compile_project_report` work without a Cargo toolchain, or drop it in
+7. Make `compile_project_report` work without a Cargo toolchain, or drop it in
    favor of the in-process `simulate_project` path.
 
 ## Changes made by this recovery
@@ -234,6 +237,11 @@ Everything else below is documentation and repository hygiene.
 
 - Committed the in-progress work as `7e312b3` and `bfaa9c6` (see
   [Recently landed](#recently-landed)).
+- Salvaged the root `package.json` (workspace scripts) from `origin/rst-impl`
+  and deleted that branch from the remote; its last commit was `e6d0da6`.
+  `backend:build`, `backend:run`, and `frontend:build` were each run to confirm
+  the scripts work. The three that chain `bun install` (`setup`, `dev`,
+  `tauri:dev`) were not run, to avoid touching the lockfile. **[V/?]**
 - Added `README.md` (root) and `PROJECT_STATUS.md` (this file).
 - Corrected the stale forward-Euler and deferred-deployable-format claims in
   `backend/AGENTS.md`; updated `TODO.md`.

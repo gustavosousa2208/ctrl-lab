@@ -50,22 +50,24 @@ The Tauri shell depends on the backend crate directly
 
 ## Setup and run
 
-```bash
-# desktop app (the normal way to use it)
-cd frontend
-bun install
-bun run tauri dev
+From the repo root:
 
-# browser-only frontend, no backend commands available
-cd frontend && bun run dev
+```bash
+bun run tauri:dev   # desktop app - the normal way to use it
+bun run dev         # browser-only frontend, no backend commands available
 ```
 
-`Open.ps1` at the repo root is a two-line Windows helper for the first of these.
+Both run `setup` first (`bun install` in `frontend/`, then `cargo build` for the
+backend), so a fresh checkout needs no separate install step. The full script
+list is in the root `package.json`.
+
+`Open.ps1` at the repo root is a two-line Windows helper for `tauri:dev`.
 
 ## Backend on its own
 
 ```bash
 # validate + simulate one project, printing execution order and final values
+bun run backend:run
 cargo run --manifest-path backend/Cargo.toml -- test-projects/01-double-integrator.json
 
 # dump a full simulation trace as CSV
@@ -76,7 +78,7 @@ cargo run --manifest-path backend/Cargo.toml --example trace -- test-projects/04
 
 ```bash
 cargo test --manifest-path backend/Cargo.toml   # 47 unit + 4 golden tests
-cd frontend && bun run build                    # tsc -b && vite build
+bun run frontend:build                          # tsc -b && vite build
 ```
 
 The golden tests replay each `test-projects/NN-*.json` through the backend and
