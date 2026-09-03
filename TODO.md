@@ -7,11 +7,15 @@
 - Backend: transfer-function handling verified for continuous, discrete `z`, and discrete `z^-1`; deterministic and covered by unit + golden tests.
 - Validation: canonical conventions (highest-power-first, single-clock `Ts`, GCD base-rate rule, strictly-proper feedback) documented in `backend/AGENTS.md`.
 - Backend: golden regression against MATLAB references landed — every `test-projects/NN-*.json` has a matching `NN-*.m` producing `NN-*.ref.csv`, compared sample-by-sample by `backend/tests/golden.rs` (r/e/u/y and switch/gain signals included).
+- Tooling: the generated `*.ref.csv` references are committed, so the golden suite runs without MATLAB installed. `golden.rs` still skips (rather than fails) a case whose CSV is missing.
 
 ## Now
 
 - Validation: document the exact RST equation form the project will use before firmware work starts (deferred deployable-format decision — see `backend/AGENTS.md` "Open / deferred").
-- Decide whether to commit the generated `*.ref.csv` files (lets the golden suite run without MATLAB) or keep them git-ignored and MATLAB-regenerated.
+- Backend: give the Deployable Control Plan (`backend/src/plan.rs`, landed in `7e312b3`) a caller — nothing emits a plan outside its own tests. A `--emit-plan <out.dcp>` flag on `ctrl-backend` is the smallest useful one.
+- Backend/Firmware: reconcile `firmware/AGENTS.md` with what `plan.rs` actually encodes. The doc prescribes a biquad second-order-section cascade for the transfer-function kernel (f32 robustness); `plan.rs` packs a single discrete state space. Also settle `io_bindings` (currently always empty) and `wcet_estimate_ns` (currently hardcoded to 0, which makes the loader's designed WCET rejection check vacuous).
+- Frontend: run the `frontend/AGENTS.md` manual checklist against the new transfer-function `domain` / `discreteVariable` inspector fields (`bfaa9c6`) — they were committed on a clean `tsc -b && vite build` but were never exercised in the running app.
+- Decide what to do with `origin/rst-impl`: its backend discrete-TF work was superseded by `fdf547e`, but its root `package.json` (workspace `dev` / `tauri:dev` / `setup` scripts) never landed on `main`.
 
 ## Next
 

@@ -68,12 +68,18 @@ This distinction drives every numerical decision below.
 
 ## Continuous blocks (integrator, continuous transfer functions)
 
-- Simulated with a fixed-step integrator at the base step. This is a fidelity
-  choice (see "plant is not the contract"), currently forward Euler; RK4 is a
-  candidate for closer MATLAB agreement.
-- Longer term, a continuous plant may be discretized to `Ts` (c2d-style) up
-  front so a software-plant preview runs the same difference equations a
-  discretized reference would. Still a preview, still not the firmware contract.
+- **Discretized once, up front, with exact ZOH.** A continuous transfer function
+  is realized in controllable canonical form and converted to a discrete state
+  space at `Ts` via the augmented matrix exponential — the same result as MATLAB
+  `c2d(sys, Ts, 'zoh')`. The simulation then advances
+  `x[k+1] = Ad x[k] + Bd u[k]`, `y[k] = C x[k] + D u[k]` once per step.
+  See `zoh_discretize` / `matrix_exponential` in `src/lib.rs`.
+- Forward Euler was used before commit `fdf547e` and is gone. Because ZOH is
+  exact at the sample instants for a piecewise-constant input, there is nothing
+  left for RK4 to improve here; the golden suite matches MATLAB to `1e-6`.
+- This is still a **fidelity** choice for the plant preview (see "plant is not
+  the contract"), not part of the firmware contract. The benefit is that the
+  preview runs the same difference equations a discretized reference would.
 
 ## Feedback and algebraic loops
 
@@ -102,8 +108,15 @@ be well-formed.
 
 ## Open / deferred (do not build in v1)
 
-- **Deployable representation.** The backend→firmware wire format is not frozen.
-  Default direction: a plain difference equation `{b, a, Ts}` per controller,
-  which both PID and (later) RST compile down to. Decide at the firmware phase.
+- **Deployable representation.** A first cut now exists in `src/plan.rs`
+  (Deployable Control Plan, `DCP_FORMAT_VERSION = 1`): a pre-scheduled block
+  list over a signal pool, packed f32 parameters, and a little-endian byte
+  encoding, matching the container described in `../firmware/AGENTS.md`.
+  Status: landed in `7e312b3` but **not wired to any caller** — no CLI flag or
+  Tauri command emits a plan yet, and no firmware consumes one. Treat the layout
+  as a proposal until a firmware loader has read it back. Transfer functions are
+  packed as discrete state space (continuous ones ZOH-discretized first) rather
+  than as raw `{b, a, Ts}`; that choice is not yet reflected here or in the RST
+  discussion below.
 - **Multi-rate.** Not in v1. The GCD base-rate rule above reserves the semantics
   so it can be added without changing the project format.
