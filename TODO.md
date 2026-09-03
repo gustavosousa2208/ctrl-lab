@@ -31,6 +31,12 @@
 - Backend: add numeric robustness checks for `f32` execution versus MATLAB `double`.
 - Frontend contract hardening: `graphIndex` is currently trusted by the backend to save parse/validation time. Add frontend-side consistency checks so `graphIndex` cannot drift from serialized `nodes` and `edges`.
 
+## PoC: first controller on hardware
+
+Staged plan in [`POC-PLAN.md`](POC-PLAN.md) — PID on one STM32, plant emulated on
+a second, compared against the simulator. Start at stage C (host-side f32 plan
+executor); it needs no hardware and is what every later stage is graded against.
+
 ## Before Firmware RST
 
 - Backend: define a deployable, versioned controller contract for RST blocks.

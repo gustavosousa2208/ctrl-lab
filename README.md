@@ -94,6 +94,8 @@ checks to run before finishing a frontend change.
 
 ## Further reading
 
+- [`POC-PLAN.md`](POC-PLAN.md) — staged plan for the first controller on real
+  hardware, and the comparison chain used to attribute error
 - [`AGENTS.md`](AGENTS.md) — purpose, subproject ownership, architectural rules
 - [`backend/AGENTS.md`](backend/AGENTS.md) — the numerical contract (sampling,
   discretization, feedback, validation)
