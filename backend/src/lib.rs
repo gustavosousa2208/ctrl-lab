@@ -3,6 +3,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+pub mod plan;
+
 pub type NodeId = String;
 pub type EdgeId = String;
 pub type PortId = String;
