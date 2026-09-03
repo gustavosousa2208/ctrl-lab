@@ -151,6 +151,8 @@ type EditorSnapshot = {
 
 const gridSize = 24;
 const dataTypeOptions = ["f32", "uint8", "uint16", "uint32", "f64", "char"] as const;
+const transferFunctionDomainOptions = ["continuous", "discrete"] as const;
+const discreteTransferVariableOptions = ["z", "z^-1"] as const;
 
 const blockCatalog: Record<BlockType, BlockDefinition> = {
   constant: {
@@ -249,12 +251,21 @@ const blockCatalog: Record<BlockType, BlockDefinition> = {
     propertyFields: [
       { key: "numerator", label: "Numerator Coefficients", inputMode: "text" },
       { key: "denominator", label: "Denominator Coefficients", inputMode: "text" },
+      { key: "domain", label: "Domain", inputMode: "select", options: [...transferFunctionDomainOptions] },
+      {
+        key: "discreteVariable",
+        label: "Discrete Variable",
+        inputMode: "select",
+        options: [...discreteTransferVariableOptions],
+      },
       { key: "stateName", label: "State Name", inputMode: "text" },
       { key: "dataType", label: "Data Type", inputMode: "select", options: [...dataTypeOptions] },
     ],
     defaultProperties: {
       numerator: "1.0",
       denominator: "1.0 1.0",
+      domain: "continuous",
+      discreteVariable: "z",
       stateName: "x",
       dataType: "f32",
     },
@@ -512,7 +523,7 @@ function buildNodeDetail(
     case "integrator":
       return `Initial ${properties.initialValue}`;
     case "transferFunction":
-      return properties.stateName?.trim() ? `State ${properties.stateName.trim()}` : "Transfer function";
+      return `${properties.domain ?? "continuous"}${properties.domain === "discrete" ? ` ${properties.discreteVariable ?? "z^-1"}` : ""}${properties.stateName?.trim() ? ` / ${properties.stateName.trim()}` : ""}`;
     case "switch":
       return "A/B by sel";
     case "squareWave":
@@ -2850,8 +2861,6 @@ export default function App() {
     </AppErrorBoundary>
   );
 }
-
-
 
 
 
