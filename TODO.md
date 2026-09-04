@@ -41,9 +41,11 @@ MiniSTM32H743), plant emulated on a second, compared against the simulator.
 - **Stage D is next**, and needs the boards. Before the scheduler is written,
   note that the tick is **two passes** (all outputs, then all state updates) —
   see `firmware/AGENTS.md`.
-- Board reality check first: `mini_stm32h743`'s devicetree enables **no UART or
-  console**, so stage D's trace dump needs a UART overlay before anything can be
-  printed.
+- Bring-up is settled and verified: `firmware/bringup/` builds for
+  `mini_stm32h743`, the console works over USB CDC ACM with no configuration,
+  and a four-line overlay puts the signal and state pools in DTCM. Caches are on
+  by default and a caches-off build is verified for the A/B jitter measurement.
+  See `firmware/BRINGUP.md`.
 
 ## Before Firmware RST
 

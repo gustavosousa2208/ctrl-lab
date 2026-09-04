@@ -48,28 +48,34 @@ skew, and you will burn days guessing.
   portability choice, not a performance necessity. Stage C measured what it costs
   (below), which is what actually matters.
 - **Caches are the real determinism hazard on this part**, and they are new
-  relative to an M4. The M7 has separate I- and D-caches, so execution time
-  becomes history-dependent and jitter stops being a simple function of the code
-  path. Two mitigations, in order: place the signal and state pools in DTCM
-  (zero-wait, never cached), and measure jitter with caches both on and off so
-  the cost is known rather than assumed. Note that `stm32h743.dtsi` defines **no
-  DTCM memory region**, so exposing it needs a `zephyr,memory-region` node of our
-  own.
+  relative to an M4. The M7 has separate I- and D-caches — both **on by default**,
+  verified in a real build — so execution time becomes history-dependent and
+  jitter stops being a simple function of the code path. Mitigations, both
+  already verified: put the signal and state pools in DTCM (zero-wait, never
+  cached), and measure the cost with caches on and off rather than guessing.
 
-### What the board does not give you
+### Bring-up: verified, and less work than expected
 
-Read the board's `.dts` before planning bring-up. It enables clocks, SDMMC,
-QSPI, SPI1/SPI4, RNG, backup SRAM, IWDG and an ST7735R display — and that is
-all. In particular:
+`firmware/bringup/` is a probe that builds for this board and answers stage D's
+prerequisites. Full detail in [`firmware/BRINGUP.md`](firmware/BRINGUP.md);
+the short version:
 
-- **No console and no UART.** `chosen` sets only `zephyr,sram`, `zephyr,flash`
-  and `zephyr,display`; there is no `zephyr,console`. Stage D's "dump the trace
-  over UART" needs a UART enabled in our own overlay first.
-- **No ADC, DAC or PWM enabled.** All three need overlay work, which lands on
-  stage F.
-- **No onboard debugger.** Flashing is `dfu-util` over USB with BOOT0 held
-  (`0483:df11`), or J-Link. Get a J-Link or similar if you want to actually step
-  through firmware rather than printf your way around.
+- **There is a console.** USB CDC ACM over the board's USB-C port, working with
+  no configuration from us. An earlier draft here claimed the board had no
+  console and no UART — that was read off the `chosen` block without following
+  the `#include` on line 161 of the board `.dts`.
+- **DTCM already exists**: 128 KB at `0x20000000`, plus 64 KB of ITCM, inherited
+  from `stm32h742.dtsi`. The board just never selects it. A four-line overlay
+  choosing `zephyr,dtcm` is the whole fix, and the probe confirms both pools
+  link at `0x20000000+`. An earlier draft claimed we would have to write the
+  memory region ourselves; also wrong, same reason.
+- Because the console rides the USB device stack, the workspace's
+  `udc_stm32.c` resume-callback patch **is** in our build path — it was
+  previously filed as only mattering if we used USB CDC.
+- **No ADC, DAC or PWM enabled**, which stays true and lands on stage F.
+  `nucleo_h743zi` is the reference to copy from, against the WeAct schematic.
+- **No onboard debugger**, but SWD is wired up by hand, so J-Link works — and
+  with it RTT, which is a better telemetry path than the USB console.
 
 ### Workspace split
 
@@ -153,7 +159,10 @@ take:
    loader protocol. Stage E adds those. The point here is the scheduler and the
    kernels.
 2. **Record to RAM, dump afterwards.** Run a fixed number of ticks into a static
-   buffer, then print it over UART when the run ends. No real-time telemetry
+   buffer, then print it over the USB CDC console (or RTT) when the run ends.
+   Keep that buffer in main SRAM, not DTCM — it is written once per tick and read
+   never, so it gains nothing from tightly-coupled memory, while the signal and
+   state pools are touched repeatedly and do. No real-time telemetry
    constraints, no dropped samples, and the comparison is exact. Streaming
    telemetry is a separate problem — do not entangle it with correctness.
 
@@ -165,8 +174,8 @@ take:
 
 What to build in `firmware/`:
 
-- Freestanding Zephyr application, board `mini_stm32h743`. A UART overlay
-  comes first — the board defines no console (see Hardware).
+- Freestanding Zephyr application, board `mini_stm32h743`, starting from
+  `firmware/bringup/` (already builds; console and DTCM are settled).
 - Plan loader: verify magic, `format_version`, `kernel_set_version`, CRC32, then
   size the signal and state pools statically from the header.
 - Kernel dispatch table indexed by `kernel_id`, matching `plan.rs`'s enum

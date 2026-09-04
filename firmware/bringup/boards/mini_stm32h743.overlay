@@ -1,0 +1,16 @@
+/*
+ * DTCM is already defined by the SoC devicetree - stm32h743.dtsi includes
+ * stm32h742.dtsi, which declares `dtcm: memory@20000000` (128 KB) and
+ * `itcm: memory@0` (64 KB). The board just never selected it.
+ *
+ * Choosing it here is what makes the __dtcm_* linker sections exist, so
+ * variables tagged __dtcm_bss_section land in tightly-coupled memory: zero
+ * wait states and never cached, which is exactly what the control loop's
+ * signal and state pools want.
+ */
+
+/ {
+	chosen {
+		zephyr,dtcm = &dtcm;
+	};
+};

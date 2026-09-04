@@ -57,9 +57,11 @@ our target, **STM32H743VIT6**:
 - `rtc_ll_stm32.c` — changes STM32 RTC init ordering for *every* series. Only
   bites us if we enable the RTC, which the PoC does not.
 - `udc_stm32.c`'s resume-callback guard — generic, so it is live on H7 the
-  moment we use Zephyr's USB device stack. It does **not** affect flashing:
-  DFU runs from the ROM bootloader, not from this driver. It would matter if
-  stage E or F carries telemetry over USB CDC.
+  moment we use Zephyr's USB device stack. **We do**: the board's console is USB
+  CDC ACM, and a verified build resolves `CONFIG_USB_DEVICE_STACK_NEXT=y`. It
+  does *not* affect flashing — DFU runs from the ROM bootloader, not this
+  driver — but it is in the path of anything that prints. See
+  [`BRINGUP.md`](BRINGUP.md).
 
 None of the three blocks the PoC. All three are worth knowing before debugging
 something odd.
@@ -118,6 +120,10 @@ existing tree via `ZEPHYR_BASE`, rather than creating a second workspace.
 Revisit and split into a dedicated workspace if we need a different Zephyr
 version, or if the shared tree starts causing us trouble. `~/seesaw-rtos-zephyr`
 is precedent that a second workspace is workable.
+
+**This arrangement is verified**, not theoretical: `firmware/bringup/` builds
+against this workspace with `ZEPHYR_BASE` pointed at its `zephyr` tree, without
+adding anything to it. See [`BRINGUP.md`](BRINGUP.md) for the exact invocation.
 
 ## Re-checking this
 
