@@ -5,14 +5,16 @@
   "packageManager": "bun@1.2.9",
   "scripts": {
     "frontend:install": "cd frontend && bun install",
-    "frontend:dev": "cd frontend && bun run dev",
-    "frontend:build": "cd frontend && bun run build",
+    "frontend:dev": "bun run frontend:install && cd frontend && bun run dev",
+    "frontend:build": "bun run frontend:install && cd frontend && bun run build",
     "frontend:preview": "cd frontend && bun run preview",
-    "frontend:tauri": "cd frontend && bun run tauri",
+    "frontend:tauri": "bun run frontend:install && cd frontend && bun run tauri",
     "backend:build": "cargo build --manifest-path backend/Cargo.toml",
+    "backend:test": "cargo test --manifest-path backend/Cargo.toml",
     "backend:run": "cargo run --manifest-path backend/Cargo.toml -- test-projects/01-double-integrator.json",
     "setup": "bun run frontend:install && bun run backend:build",
-    "dev": "bun run setup && bun run frontend:dev",
-    "tauri:dev": "bun run setup && bun run frontend:tauri dev"
+    "verify": "bun run backend:test && bun run frontend:build",
+    "dev": "bun run setup && cd frontend && bun run dev",
+    "tauri:dev": "bun run setup && cd frontend && bun run tauri dev"
   }
 }

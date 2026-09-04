@@ -40,17 +40,24 @@ The Tauri shell depends on the backend crate directly
 
 ## Prerequisites
 
-- **Rust** (stable, edition 2021)
-- **Bun** 1.2.9 (pinned via `packageManager` in `frontend/package.json`)
-- **Tauri v2 platform prerequisites** — on Windows: MSVC C++ Build Tools and
-  WebView2. On Linux/WSL2 the package list is in
-  [`frontend/README.md`](frontend/README.md).
+- **Rust** (stable, edition 2021) — rustup or Homebrew both work
+- **Bun** (`packageManager` pins 1.2.9; newer works)
+- **Tauri v2 platform prerequisites**:
+  - **macOS** — Xcode Command Line Tools. Nothing else; the webview is the
+    system WKWebView.
+  - **Windows** — MSVC C++ Build Tools and WebView2.
+  - **Linux / WSL2** — the package list is in
+    [`frontend/README.md`](frontend/README.md).
 - **MATLAB** — optional. Only needed to *regenerate* the golden references; the
   `.ref.csv` files are committed, so the test suite runs without it.
 
+Verified building on **Windows 11 (x86_64)** and **macOS 26 (arm64)** from a
+clean clone. The backend's f32 test vectors reproduce bit-for-bit on both, and
+the frontend's built asset hashes match across platforms.
+
 ## Setup and run
 
-From the repo root:
+From the repo root, on any platform:
 
 ```bash
 bun run tauri:dev   # desktop app - the normal way to use it
@@ -58,10 +65,12 @@ bun run dev         # browser-only frontend, no backend commands available
 ```
 
 Both run `setup` first (`bun install` in `frontend/`, then `cargo build` for the
-backend), so a fresh checkout needs no separate install step. The full script
-list is in the root `package.json`.
+backend), so a fresh checkout needs no separate install step. Note that plain
+`bun install` at the repo root does nothing useful — the root `package.json`
+only holds scripts. Use `bun run setup`.
 
-`Open.ps1` at the repo root is a two-line Windows helper for `tauri:dev`.
+The full script list is in the root `package.json`; `bun run verify` runs the
+backend tests and the frontend build together.
 
 ## Backend on its own
 
@@ -77,8 +86,9 @@ cargo run --manifest-path backend/Cargo.toml --example trace -- test-projects/04
 ## Validation
 
 ```bash
-cargo test --manifest-path backend/Cargo.toml   # 47 unit + 4 golden tests
-bun run frontend:build                          # tsc -b && vite build
+bun run verify        # backend tests + frontend build
+bun run backend:test  # 51 unit + 6 vector/golden tests
+bun run frontend:build
 ```
 
 The golden tests replay each `test-projects/NN-*.json` through the backend and
