@@ -97,6 +97,21 @@ non-rational multi-rate timing, unsupported transfer-function shapes, and
 degenerate denominators. A model that reaches the simulator is already known to
 be well-formed.
 
+## f32 execution contract
+
+The firmware executes `f32`; the simulator computes in `f64`. `backend/src/exec.rs`
+is the reference `f32` executor and the executable specification the firmware
+kernels are graded against — same operations, same order, same single precision.
+
+Measured worst-case divergence between the two, over all four fixtures:
+**5.8e-6** (`cargo test -p ctrl-backend exec -- --nocapture` prints the per-fixture
+table). Treat that as the bound: a device trace that differs from
+`test-projects/NN-*.f32.csv` by more than this is a bug, not precision loss.
+
+`NN-*.plan.dcp` and `NN-*.f32.csv` are committed and regression-tested, so a
+change to parameter packing, kernel arithmetic, or the wire format shows up as a
+failing test rather than as a surprise on the bench.
+
 ## Testing contract
 
 - Golden regression against MATLAB/Simulink-exported traces.

@@ -113,8 +113,23 @@ f32 coefficient sensitivity and roundoff bounded as order grows.
 
 ## Scheduling and multi-rate
 
-- A hardware timer fires every `base_ts_ns`. Each tick, the scheduler walks the
-  pre-ordered `blocks[]` and runs a block when `tick % rate_div == 0`.
+- A hardware timer fires every `base_ts_ns`. Each tick, the scheduler makes
+  **two** passes over the pre-ordered `blocks[]`, running a block when
+  `tick % rate_div == 0`:
+
+  ```text
+  pass 1:  signals[out] = kernel_output(state, signals[in])   // all blocks
+  pass 2:  state        = kernel_update(state, signals[in])   // all blocks
+  ```
+
+  **One fused pass is wrong.** The topological order covers only
+  direct-feedthrough edges, so a strictly-proper plant is scheduled *before* the
+  controller driving it. Its output needs no input, so the early slot is fine —
+  but its state update needs `u[k]`, produced later in the same tick. Fusing
+  feeds it `u[k-1]` and silently inserts a sample of delay into the loop.
+  `backend/src/exec.rs` is the reference implementation and pins this with a
+  test; on fixture 04 the fused variant diverges by 1.2e-2 against an f32 noise
+  floor of 5.8e-6.
 - Between a slower block's ticks, its last output persists in its signal slot —
   the zero-order hold from the backend numerical contract.
 - v1 sets every `rate_div = 1` (single clock, `stepSize == Ts`). Multi-rate later
@@ -144,8 +159,10 @@ BOOT -> IDLE(no plan) -> LOADING -> ARMED -> RUNNING -> FAULT
 
 - **LOADING**: receive DCP into a spare buffer, verify `crc32`, check
   `format_version` / `kernel_set_version`, bind I/O channels, size pools.
-- **ARMED**: state pools zeroed (or set to declared initial conditions), outputs
-  driven to safe defaults.
+- **ARMED**: state pools set to each kernel's **declared initial conditions**,
+  not blindly zeroed — an integrator arms to its `initialValue` and a delay line
+  fills with its initial value. Both come from the packed parameter blob, so no
+  separate initial-state section is needed. Outputs driven to safe defaults.
 - **RUNNING**: scheduler active.
 - **Hot-swap**: a new plan is loaded into the spare buffer and switched in
   atomically at a tick boundary (double buffering) — the mechanism behind

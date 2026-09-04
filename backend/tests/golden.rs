@@ -127,3 +127,88 @@ fn golden_tf_test() {
 fn golden_second_order_system() {
     compare_against_reference("04-2nd-order-system");
 }
+
+// ---------------------------------------------------------------------------
+// Firmware contract vectors
+// ---------------------------------------------------------------------------
+//
+// `NN-*.plan.dcp` and `NN-*.f32.csv` are the artifacts the firmware is graded
+// against: the exact bytes it will load, and the exact f32 trace its kernels
+// must reproduce. They are committed, so a change to parameter packing, kernel
+// arithmetic, or the wire format shows up here as a diff rather than as a
+// mystery on the bench.
+//
+// Regenerate deliberately, never to make this test pass:
+//   cargo run --manifest-path backend/Cargo.toml -- \
+//     --emit-plan  test-projects/NN-*.plan.dcp test-projects/NN-*.json
+//   cargo run --manifest-path backend/Cargo.toml -- \
+//     --emit-trace test-projects/NN-*.f32.csv  test-projects/NN-*.json
+
+const PROJECTS: [&str; 4] = [
+    "01-double-integrator",
+    "02-feedback-TF",
+    "03-TF-test",
+    "04-2nd-order-system",
+];
+
+#[test]
+fn committed_plans_match_freshly_compiled_bytes() {
+    for project in PROJECTS {
+        let dir = projects_dir();
+        let json = std::fs::read_to_string(dir.join(format!("{project}.json")))
+            .expect("project json readable");
+        let dag = ctrl_backend::parse_project_json(&json).expect("project must parse");
+        let plan = ctrl_backend::plan::build_control_plan(&dag).expect("plan must build");
+
+        let committed = std::fs::read(dir.join(format!("{project}.plan.dcp")))
+            .expect("committed plan must exist");
+        let fresh = ctrl_backend::plan::encode(&plan);
+
+        assert_eq!(
+            committed.len(),
+            fresh.len(),
+            "{project}: plan size changed ({} -> {} bytes). The wire format or \
+             the packed parameters moved; bump DCP_FORMAT_VERSION or \
+             KERNEL_SET_VERSION and regenerate the vectors.",
+            committed.len(),
+            fresh.len()
+        );
+        assert_eq!(
+            committed, fresh,
+            "{project}: compiled plan bytes differ from the committed vector"
+        );
+    }
+}
+
+#[test]
+fn committed_f32_traces_match_the_reference_executor() {
+    for project in PROJECTS {
+        let dir = projects_dir();
+        let bytes = std::fs::read(dir.join(format!("{project}.plan.dcp")))
+            .expect("committed plan must exist");
+        let plan = ctrl_backend::plan::decode(&bytes).expect("committed plan must decode");
+
+        let expected = load_reference(&dir.join(format!("{project}.f32.csv")));
+        let trace = ctrl_backend::exec::run(&plan, expected.rows.len())
+            .expect("plan execution must succeed");
+
+        for (column, name) in expected.columns.iter().enumerate().skip(1) {
+            let series = &trace.signals[column - 1];
+            for (k, row) in expected.rows.iter().enumerate() {
+                let delta = (row[column] - series[k] as f64).abs();
+                assert!(
+                    delta <= 1.0e-9,
+                    "{project} `{name}`[{k}]: committed {} vs executor {} (delta {delta:e})",
+                    row[column],
+                    series[k]
+                );
+            }
+        }
+
+        eprintln!(
+            "{project}: {} samples x {} signals reproduced from the committed plan",
+            expected.rows.len(),
+            expected.columns.len() - 1
+        );
+    }
+}
