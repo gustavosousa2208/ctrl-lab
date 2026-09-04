@@ -1,0 +1,46 @@
+# Normalize line endings so the repo is identical on Windows, macOS and Linux.
+#
+# Without this, every file touched on Windows shows up as modified on a Mac (and
+# the reverse), and `git diff` warns about CRLF on nearly every command. Text is
+# stored LF in the repository and checked out with the platform's native ending.
+* text=auto
+
+# Files whose content is line-ending sensitive, regardless of platform.
+*.sh          text eol=lf
+*.bash        text eol=lf
+*.ps1         text eol=crlf
+*.bat         text eol=crlf
+*.cmd         text eol=crlf
+
+# Sources and configuration - LF everywhere, including in a Windows checkout.
+# Zephyr, CMake and the ARM toolchain all expect LF, and a CRLF .overlay or
+# .conf can fail in ways that are tedious to diagnose.
+*.c           text eol=lf
+*.h           text eol=lf
+*.rs          text eol=lf
+*.ts          text eol=lf
+*.tsx         text eol=lf
+*.js          text eol=lf
+*.css         text eol=lf
+*.html        text eol=lf
+*.json        text eol=lf
+*.md          text eol=lf
+*.m           text eol=lf
+*.toml        text eol=lf
+*.yml         text eol=lf
+*.yaml        text eol=lf
+*.conf        text eol=lf
+*.overlay     text eol=lf
+*.dts         text eol=lf
+*.dtsi        text eol=lf
+CMakeLists.txt text eol=lf
+
+# Reference traces are compared byte-for-byte by the golden tests, and the
+# committed control plans are binary. Neither may be rewritten by git.
+*.csv         text eol=lf
+*.dcp         binary
+
+# Binary assets.
+*.png         binary
+*.ico         binary
+*.lock        text eol=lf
