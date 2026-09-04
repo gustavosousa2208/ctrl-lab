@@ -88,6 +88,13 @@ macOS too. Arrangement:
 - Windows stays the editor/UI machine.
 - Everything crossing between them goes through git, not file sync.
 
+**Verified end to end on macOS** (2026-09-04, arm64) from a clean clone: all 57
+backend tests pass, the frontend builds, and the Tauri shell compiles in ~50 s.
+The f32 plan vectors were generated on Windows/x86_64 and reproduce bit-for-bit
+on macOS/arm64 — a useful independent check on the determinism the whole project
+depends on. Disk footprint is tabulated in
+[`firmware/BRINGUP.md`](firmware/BRINGUP.md).
+
 The Mac's Zephyr environment has been surveyed — see
 [`firmware/ZEPHYR-WORKSPACE.md`](firmware/ZEPHYR-WORKSPACE.md). Zephyr v4.3.0,
 SDK 0.17.4, `mini_stm32h743` supported. Two things to know before building there:

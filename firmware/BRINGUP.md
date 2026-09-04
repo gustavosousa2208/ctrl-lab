@@ -8,6 +8,45 @@ attached — a build proves configuration and linking, not runtime behavior.
 `bringup/` is the probe that produced these answers. It is not the control
 runtime; it exists to settle the questions stage D depends on.
 
+## Disk footprint
+
+Measured on the Mac, 2026-09-04. The point of the table is that **most of this
+is already installed** — the marginal cost of doing ctrl-lab work there is the
+last section, about 1.7 GB.
+
+| | Size | Notes |
+| --- | --- | --- |
+| **Zephyr side** | | |
+| `zephyrproject/zephyr` | 1.4 GB | the tree itself |
+| `zephyrproject/modules` | 2.8 GB | every HAL for every vendor |
+| `zephyrproject/.venv` | 1.8 GB | west and its Python dependencies |
+| `zephyrproject/tools`, `bootloader` | 35 MB | |
+| Zephyr SDK, `arm-zephyr-eabi` | 1.1 GB | the only architecture we need |
+| Zephyr SDK, `xtensa-…` | 188 MB | ESP32; already installed, unused by us |
+| **Host toolchains** | | |
+| Xcode Command Line Tools | 1.9 GB | also Tauri's macOS prerequisite |
+| Rust (Homebrew) | 437 MB | |
+| Bun | 461 MB | |
+| **ctrl-lab itself** | | |
+| Checkout, fully built | 933 MB | of which: |
+| ⤷ `frontend/src-tauri/target` | 709 MB | Tauri pulls ~400 crates |
+| ⤷ `backend/target` | 128 MB | |
+| ⤷ `frontend/node_modules` | 92 MB | |
+| ⤷ `.git` | <1 MB | the repo is tiny |
+
+**Totals.** A machine with nothing installed needs roughly **12 GB** for all of
+it. Trimming to what this project actually uses — ARM-only SDK, no Xtensa —
+brings the Zephyr side to about 7 GB.
+
+Two things worth knowing before you clone a second workspace:
+
+- The **`modules` directory is the expensive part at 2.8 GB**, and almost all of
+  it is HALs for vendors we will never build. `west update` accepts a group
+  filter, so a ctrl-lab-only workspace could pull far less. That is the argument
+  for a separate workspace if disk ever gets tight — not the zephyr tree itself.
+- `frontend/src-tauri/target` at 709 MB dwarfs everything else in the checkout.
+  `cargo clean` there reclaims it, at the cost of a ~50 s rebuild.
+
 ## Building it
 
 ```bash
