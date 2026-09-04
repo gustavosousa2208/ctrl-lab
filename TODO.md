@@ -12,7 +12,6 @@
 ## Now
 
 - Validation: document the exact RST equation form the project will use before firmware work starts (deferred deployable-format decision — see `backend/AGENTS.md` "Open / deferred").
-- Backend: give the Deployable Control Plan (`backend/src/plan.rs`, landed in `7e312b3`) a caller — nothing emits a plan outside its own tests. A `--emit-plan <out.dcp>` flag on `ctrl-backend` is the smallest useful one.
 - Backend/Firmware: reconcile `firmware/AGENTS.md` with what `plan.rs` actually encodes. The doc prescribes a biquad second-order-section cascade for the transfer-function kernel (f32 robustness); `plan.rs` packs a single discrete state space. Also settle `io_bindings` (currently always empty) and `wcet_estimate_ns` (currently hardcoded to 0, which makes the loader's designed WCET rejection check vacuous).
 - Frontend: run the `frontend/AGENTS.md` manual checklist against the new transfer-function `domain` / `discreteVariable` inspector fields (`bfaa9c6`) — they were committed on a clean `tsc -b && vite build` but were never exercised in the running app.
 
@@ -28,14 +27,23 @@
   - one-sample delay mismatch
   - near-stability-boundary pole placements
 - Backend: add explicit tests for sign convention mistakes in `R`, `S`, and `T`.
-- Backend: add numeric robustness checks for `f32` execution versus MATLAB `double`.
 - Frontend contract hardening: `graphIndex` is currently trusted by the backend to save parse/validation time. Add frontend-side consistency checks so `graphIndex` cannot drift from serialized `nodes` and `edges`.
 
 ## PoC: first controller on hardware
 
-Staged plan in [`POC-PLAN.md`](POC-PLAN.md) — PID on one STM32, plant emulated on
-a second, compared against the simulator. Start at stage C (host-side f32 plan
-executor); it needs no hardware and is what every later stage is graded against.
+Staged plan in [`POC-PLAN.md`](POC-PLAN.md) — PID on one STM32 (WeAct
+MiniSTM32H743), plant emulated on a second, compared against the simulator.
+
+- **Stage C is done.** `backend/src/exec.rs` is the f32 reference executor;
+  `--emit-plan` / `--emit-trace` / `--dump-plan` are on the CLI; committed
+  vectors and their regression tests are in place. Measured f32-vs-f64 bound:
+  **5.8e-6**.
+- **Stage D is next**, and needs the boards. Before the scheduler is written,
+  note that the tick is **two passes** (all outputs, then all state updates) —
+  see `firmware/AGENTS.md`.
+- Board reality check first: `mini_stm32h743`'s devicetree enables **no UART or
+  console**, so stage D's trace dump needs a UART overlay before anything can be
+  printed.
 
 ## Before Firmware RST
 

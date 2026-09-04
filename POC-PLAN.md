@@ -33,18 +33,43 @@ skew, and you will burn days guessing.
 
 ## Hardware
 
-- **2 × NUCLEO-G474RE.** The G4 is the right part here: Cortex-M4F at 170 MHz
-  with a **single-precision** hardware FPU, true 12-bit DACs, fast ADCs, and good
-  Zephyr support (`nucleo_g474re`). Confirm channel counts and pinout against the
-  datasheet before wiring anything.
-- The M4F detail matters more than it looks: **f32 is a single-cycle hardware
-  operation, f64 is software-emulated.** That retroactively justifies `plan.rs`
-  packing f32. The f32/f64 gap is therefore something to *characterize*, not
-  eliminate — which is what stage C is for.
-- **Control rate: 1 kHz** (`base_ts_ns = 1_000_000`). Budget per tick: 1 ms, i.e.
-  ~170,000 cycles. A 2nd-order state-space kernel is a few dozen cycles, so the
-  headroom is enormous — which is fine. The PoC is proving *determinism and
-  correctness*, not squeezing cycles.
+**2 × WeAct Studio MiniSTM32H743 Core Board** (STM32H743VIT6). Zephyr board id
+`mini_stm32h743`, present in v4.3.0 and declaring 512 KB RAM / 2 MB flash.
+
+- **Control rate: 1 kHz** (`base_ts_ns = 1_000_000`). At 480 MHz that is ~480,000
+  cycles per tick against a kernel cost of a few dozen. The headroom is absurd,
+  which is correct for this PoC — it proves *determinism and correctness*, not
+  throughput.
+- **The M7 has a double-precision FPU** (FPv5-D16), so `f64` runs in hardware
+  here, not in software. An earlier draft of this plan claimed otherwise; that
+  was true of the Cortex-M4F originally targeted, not of this part. `f32` in the
+  DCP is still the right call — half the memory and bus traffic, and it keeps the
+  format portable to parts without a `d`-variant FPU — but it is a footprint and
+  portability choice, not a performance necessity. Stage C measured what it costs
+  (below), which is what actually matters.
+- **Caches are the real determinism hazard on this part**, and they are new
+  relative to an M4. The M7 has separate I- and D-caches, so execution time
+  becomes history-dependent and jitter stops being a simple function of the code
+  path. Two mitigations, in order: place the signal and state pools in DTCM
+  (zero-wait, never cached), and measure jitter with caches both on and off so
+  the cost is known rather than assumed. Note that `stm32h743.dtsi` defines **no
+  DTCM memory region**, so exposing it needs a `zephyr,memory-region` node of our
+  own.
+
+### What the board does not give you
+
+Read the board's `.dts` before planning bring-up. It enables clocks, SDMMC,
+QSPI, SPI1/SPI4, RNG, backup SRAM, IWDG and an ST7735R display — and that is
+all. In particular:
+
+- **No console and no UART.** `chosen` sets only `zephyr,sram`, `zephyr,flash`
+  and `zephyr,display`; there is no `zephyr,console`. Stage D's "dump the trace
+  over UART" needs a UART enabled in our own overlay first.
+- **No ADC, DAC or PWM enabled.** All three need overlay work, which lands on
+  stage F.
+- **No onboard debugger.** Flashing is `dfu-util` over USB with BOOT0 held
+  (`0483:df11`), or J-Link. Get a J-Link or similar if you want to actually step
+  through firmware rather than printf your way around.
 
 ### Workspace split
 
@@ -59,41 +84,61 @@ macOS too. Arrangement:
 
 The Mac's Zephyr environment has been surveyed — see
 [`firmware/ZEPHYR-WORKSPACE.md`](firmware/ZEPHYR-WORKSPACE.md). Zephyr v4.3.0,
-SDK 0.17.4, `nucleo_g474re` supported. Two things to know before building there:
+SDK 0.17.4, `mini_stm32h743` supported. Two things to know before building there:
 it is a **shared work workspace** carrying ten uncommitted patches in the Zephyr
-tree (nine are STM32N6-guarded and cannot affect G4), and `west` lives in a venv
-that is not on the non-interactive SSH `PATH`.
+tree (seven cannot affect an H7 build; three can, none blocking), and `west`
+lives in a venv that is not on the non-interactive SSH `PATH`.
 
-## Stage C — host plan executor (no hardware)
+## Stage C — host plan executor — **DONE**
 
-**Do this first.** It is the highest-value, lowest-cost work in the whole plan,
-and it can start today.
+Landed. `backend/src/exec.rs` runs a `ControlPlan` the way the firmware must: a
+flat `f32` signal pool, a flat `f32` state pool, blocks walked in `blocks[]`
+order, one function per `KernelId`, no allocation in the step, no `f64` anywhere.
 
-Build a Rust executor that runs a `ControlPlan` exactly the way the firmware
-will: a flat `f32` signal pool, blocks walked in `blocks[]` order, one kernel
-function per `KernelId`, state in a flat `f32` pool. No `f64` anywhere.
+Shipped with it:
 
-Why it pays for itself:
+- `ctrl-backend --emit-plan <out.dcp>`, `--emit-trace <out.csv>`, `--dump-plan`.
+- Committed vectors per fixture: `test-projects/NN-*.plan.dcp` (the exact bytes
+  the firmware loads) and `NN-*.f32.csv` (the exact trace its kernels must
+  reproduce), guarded by two tests in `backend/tests/golden.rs`.
 
-- It validates the DCP format, the parameter packing, and the state-space
-  conversion **before** any C exists.
-- It quantifies the f32-vs-f64 error, which `TODO.md` has wanted for months.
-- It becomes the **executable specification** for the firmware. The C kernels are
-  not "hopefully equivalent" — they must reproduce this trace.
+### Result: the f32 bound
 
-Deliverables:
+Worst divergence between the f32 executor and the f64 simulator, across all four
+fixtures:
 
-- `backend/src/exec.rs` — the executor.
-- `ctrl-backend --emit-plan <out.dcp>` and `--dump-plan <in.dcp>` on the CLI, so
-  plans exist as files you can inspect, diff, and ship.
-- A test vector per fixture: `NN-*.plan.dcp` plus `NN-*.f32.csv` (the expected
-  f32 trace). These are the artifacts the firmware is later graded against.
-- A test extending `golden.rs`: executor vs. `simulate_validated_dag`, reporting
-  `max_abs_error` and RMS per signal rather than asserting a tight tolerance.
+| Fixture | max &#124;f64 − f32&#124; | Worst signal |
+| --- | --- | --- |
+| 01-double-integrator | 5.34e-6 | `integrator-2` |
+| 02-feedback-TF | 1.90e-7 | `gain-12` |
+| 03-TF-test | 1.30e-7 | `sum-3` |
+| 04-2nd-order-system | 5.76e-6 | `transferFunction-9` |
 
-**Exit criteria:** f32 executor agrees with the f64 simulator on all four
-fixtures to a *documented* bound. Do not guess the bound in advance — measure it,
-then write it into `backend/AGENTS.md` as the contract.
+**Bound: 5.8e-6.** That closes `TODO.md`'s long-standing "numeric robustness
+checks for f32 execution versus MATLAB double" item. Anything on hardware that
+exceeds it is a bug, not precision loss.
+
+### Result: the execution model is two passes, not one
+
+The finding stage C existed to produce, and it contradicts `firmware/AGENTS.md`.
+Each tick must run **all** block outputs, then **all** state updates:
+
+```text
+pass 1:  for block in blocks:  signals[out] = kernel_output(state, signals[in])
+pass 2:  for block in blocks:  state        = kernel_update(state, signals[in])
+```
+
+A single fused walk is wrong. The topological sort orders only *direct-feedthrough*
+edges, so a strictly-proper plant `P` is scheduled **before** the controller `C`
+that drives it. `P` needs no input for its output, so the early slot is fine —
+but its state update needs `u[k]`, produced later in the same tick. Fusing feeds
+it `u[k-1]`, silently inserting a one-sample delay into the loop.
+
+This is not theoretical: `exec.rs` pins it with a test that runs fixture 04 both
+ways. The fused version diverges by **1.2e-2** — about 2000× the f32 noise floor,
+so it is unmissable if the firmware gets it wrong, but only if someone is
+looking. `firmware/AGENTS.md` describes a single walk of `blocks[]` and needs
+correcting before the scheduler is written.
 
 ## Stage D — firmware runtime, one MCU, no I/O
 
@@ -112,14 +157,16 @@ take:
    constraints, no dropped samples, and the comparison is exact. Streaming
    telemetry is a separate problem — do not entangle it with correctness.
 
-   Budget: G474RE has 128 KB SRAM. 2000 ticks × 6 signals × 4 B = 48 KB. At
-   1 kHz that is a 2 s window, enough for a step response to settle if you
-   re-discretize the plant at `Ts = 0.001` (re-run the fixture's `.m` with the
-   new `Ts`; the existing scripts make this a one-line change).
+   Budget: the H743 declares 512 KB RAM, so this is comfortable. 5000 ticks
+   × 6 signals × 4 B = 120 KB, a 5 s window at 1 kHz — plenty for a step
+   response to settle once you re-discretize the plant at `Ts = 0.001` (re-run
+   the fixture's `.m` with the new `Ts`; the scripts make it a one-line
+   change).
 
 What to build in `firmware/`:
 
-- `west` workspace, board `nucleo_g474re`.
+- Freestanding Zephyr application, board `mini_stm32h743`. A UART overlay
+  comes first — the board defines no console (see Hardware).
 - Plan loader: verify magic, `format_version`, `kernel_set_version`, CRC32, then
   size the signal and state pools statically from the header.
 - Kernel dispatch table indexed by `kernel_id`, matching `plan.rs`'s enum
