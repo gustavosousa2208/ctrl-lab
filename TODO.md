@@ -11,9 +11,13 @@
 
 ## Now
 
-- Validation: document the exact RST equation form the project will use before firmware work starts (deferred deployable-format decision — see `backend/AGENTS.md` "Open / deferred").
-- Backend/Firmware: reconcile `firmware/AGENTS.md` with what `plan.rs` actually encodes. The doc prescribes a biquad second-order-section cascade for the transfer-function kernel (f32 robustness); `plan.rs` packs a single discrete state space. Also settle `io_bindings` (currently always empty) and `wcet_estimate_ns` (currently hardcoded to 0, which makes the loader's designed WCET rejection check vacuous).
-- Frontend: run the `frontend/AGENTS.md` manual checklist against the new transfer-function `domain` / `discreteVariable` inspector fields (`bfaa9c6`) — they were committed on a clean `tsc -b && vite build` but were never exercised in the running app.
+Neither of the first two needs hardware. Current state and context:
+[`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
+- Backend/Firmware: reconcile `firmware/AGENTS.md` with what `plan.rs` actually encodes. The doc prescribes a biquad second-order-section cascade for the transfer-function kernel (f32 robustness); `plan.rs` packs a single discrete state space. Also settle `io_bindings` (always empty) and `wcet_estimate_ns` (hardcoded to 0, which makes the loader's designed WCET rejection check vacuous). **This is the last thing blocking a firmware kernel from being written.**
+- Frontend: run the `frontend/AGENTS.md` manual checklist against the transfer-function `domain` / `discreteVariable` inspector fields (`bfaa9c6`) — committed on a clean build but never exercised in the running app. The only committed change in the project with no verification behind it.
+- Hardware: pick the board (WeAct MiniSTM32H743 vs. a Nucleo with an integrated debugger), then add its overlay and re-verify `firmware/bringup/`.
+- Validation: document the exact RST equation form the project will use. Note that stage C established a PID needs no new kernel — a discrete PID *is* a second-order discrete transfer function, which the existing kernel already runs.
 
 ## Next
 

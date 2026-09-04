@@ -9,29 +9,41 @@ It is deliberately **not** a Simulink replacement. See [`AGENTS.md`](AGENTS.md)
 for the project philosophy, boundaries, and the decision filter used before
 adding anything.
 
-## Status (2026-09-03)
+## Status (2026-09-04)
 
 | Layer | State |
 | --- | --- |
 | **Frontend** (`frontend/`) | Working. React + React Flow canvas editor in a Tauri v2 desktop shell: block library, project save/open, scope plotting, compile report. |
 | **Backend** (`backend/`) | Working. Rust crate `ctrl-backend`: project parsing, validation, and a deterministic fixed-step simulator, verified sample-by-sample against MATLAB references. |
-| **Firmware** (`firmware/`) | **Design only.** `firmware/AGENTS.md` specifies the target runtime; there is no Zephyr code and no board bring-up yet. |
+| **Firmware** (`firmware/`) | **Design plus a build-verified bring-up probe.** `firmware/AGENTS.md` specifies the target runtime; `firmware/bringup/` builds for an STM32H743 and settles the DTCM, console and cache questions. There is no control runtime yet. |
 
 Deployment to hardware does not exist yet. The backend→firmware wire format
-(the "Deployable Control Plan") has a first implementation in
-`backend/src/plan.rs`, but nothing calls it yet — see
-[`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+(the "Deployable Control Plan") is implemented and can be compiled, inspected and
+executed on the host in `f32` exactly as the firmware must — see
+[`POC-PLAN.md`](POC-PLAN.md) for the staged route to running it on a board, and
+[`PROJECT_STATUS.md`](PROJECT_STATUS.md) for where things stand right now.
 
 ## Layout
 
 ```
 AGENTS.md            project philosophy and architectural boundaries
+PROJECT_STATUS.md    START HERE - current state, loose ends, next actions
+POC-PLAN.md          staged route to running a controller on real hardware
 TODO.md              prioritized work queue
-PROJECT_STATUS.md    recovered state, in-progress work, next actions
-backend/             Rust: parse -> validate -> simulate (AGENTS.md = numerical contract)
+backend/             Rust: parse -> validate -> simulate -> compile a control plan
+  src/plan.rs          the backend -> firmware wire format (DCP)
+  src/exec.rs          f32 reference executor; the firmware's executable spec
+  AGENTS.md            numerical contract, and the f32 bound
 frontend/            Vite + React + React Flow editor, and the Tauri shell in src-tauri/
-firmware/            design notes only (AGENTS.md = target runtime architecture)
-test-projects/       .json fixtures + .m MATLAB references + .ref.csv golden traces
+firmware/            design + a build-verified bring-up probe; no runtime yet
+  AGENTS.md            target runtime architecture
+  BRINGUP.md           board facts, disk footprint, what to copy from other boards
+  ZEPHYR-WORKSPACE.md  the Mac build environment and its local patches
+  bringup/             minimal Zephyr app that builds for an STM32H743
+test-projects/       .json fixtures, .m MATLAB references, and the golden traces:
+                       NN-*.ref.csv   MATLAB f64 reference
+                       NN-*.plan.dcp  compiled plan, the exact bytes the MCU loads
+                       NN-*.f32.csv   f32 trace the firmware kernels must reproduce
 ```
 
 The Tauri shell depends on the backend crate directly
@@ -113,3 +125,7 @@ checks to run before finishing a frontend change.
   Deployable Control Plan container
 - [`frontend/AGENTS.md`](frontend/AGENTS.md) — editor invariants and the manual
   regression checklist
+- [`firmware/BRINGUP.md`](firmware/BRINGUP.md) — what the board gives you, what
+  it does not, disk footprint, and how to build the probe
+- [`firmware/ZEPHYR-WORKSPACE.md`](firmware/ZEPHYR-WORKSPACE.md) — the macOS
+  build environment, its local Zephyr patches, and which of them reach us
