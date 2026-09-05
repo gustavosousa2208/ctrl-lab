@@ -12,8 +12,22 @@
  */
 
 #include <zephyr/kernel.h>
+#include <zephyr/devicetree.h>
 #include <zephyr/linker/section_tags.h>
 #include <zephyr/sys/printk.h>
+
+/* Where DTCM actually is, taken from the devicetree rather than hardcoded, so
+ * the runtime check below stays correct across boards.
+ *
+ * nucleo_f767zi already has `zephyr,dtcm = &dtcm` in the chosen block of its
+ * board .dts, so unlike the WeAct H743 it needs no overlay. Fail the build,
+ * not the run, if some future board forgets it.
+ */
+#if !DT_HAS_CHOSEN(zephyr_dtcm)
+#error "no zephyr,dtcm chosen - add an overlay for this board (see BRINGUP.md)"
+#endif
+#define DTCM_BASE DT_REG_ADDR(DT_CHOSEN(zephyr_dtcm))
+#define DTCM_SIZE DT_REG_SIZE(DT_CHOSEN(zephyr_dtcm))
 
 /* Sized for the probe, not for a real plan. The largest committed fixture needs
  * 6 signals and 4 state words; a plan loader will size these from the DCP
@@ -22,10 +36,14 @@
 #define MAX_SIGNALS 64
 #define MAX_STATE   64
 
-/* __dtcm_bss_section exists only because boards/mini_stm32h743.overlay chooses
- * zephyr,dtcm. Without that overlay these silently fall back to ordinary SRAM
- * and the build still succeeds - check the linker's DTCM usage, not just that
- * it compiled.
+/* __dtcm_bss_section puts these in tightly-coupled memory: zero wait states and
+ * never cached, which is exactly what the control loop's hot pools want.
+ *
+ * The hazard is that this fails SILENTLY. With nothing choosing zephyr,dtcm the
+ * tag still compiles and links, the data just falls back to ordinary SRAM, and
+ * the build passes. The #error above catches a missing chosen node; is_in_dtcm()
+ * catches the rest, because "the section exists" and "the data ended up in it"
+ * are different claims. Read the check at boot rather than trusting the build.
  */
 static float signal_pool[MAX_SIGNALS] __dtcm_bss_section;
 static float state_pool[MAX_STATE] __dtcm_bss_section;
@@ -40,6 +58,13 @@ static float state_pool[MAX_STATE] __dtcm_bss_section;
 
 #define DEMCR_TRCENA    (1UL << 24)
 #define DWT_CTRL_CYCCNT (1UL << 0)
+
+static bool is_in_dtcm(const void *p)
+{
+	uintptr_t a = (uintptr_t)p;
+
+	return a >= DTCM_BASE && a < DTCM_BASE + DTCM_SIZE;
+}
 
 static void cycle_counter_enable(void)
 {
@@ -62,10 +87,18 @@ static void fake_step(void)
 int main(void)
 {
 	printk("ctrl-lab bringup probe\n");
-	printk("signal_pool @ %p  state_pool @ %p  (DTCM base is 0x20000000)\n",
-	       (void *)signal_pool, (void *)state_pool);
-	printk("icache=%d dcache=%d\n",
-	       IS_ENABLED(CONFIG_ICACHE), IS_ENABLED(CONFIG_DCACHE));
+	printk("board " CONFIG_BOARD_TARGET ", SoC " CONFIG_SOC "\n");
+
+	printk("DTCM is %u KB at 0x%08lx\n",
+	       (unsigned int)(DTCM_SIZE / 1024U), (unsigned long)DTCM_BASE);
+	printk("signal_pool @ %p  %s\n", (void *)signal_pool,
+	       is_in_dtcm(signal_pool) ? "in DTCM" : "*** NOT IN DTCM ***");
+	printk("state_pool  @ %p  %s\n", (void *)state_pool,
+	       is_in_dtcm(state_pool) ? "in DTCM" : "*** NOT IN DTCM ***");
+
+	printk("icache=%d dcache=%d fpu_dp=%d\n",
+	       IS_ENABLED(CONFIG_ICACHE), IS_ENABLED(CONFIG_DCACHE),
+	       IS_ENABLED(CONFIG_CPU_HAS_FPU_DOUBLE_PRECISION));
 	printk("core %u Hz, kernel tick %u Hz\n",
 	       sys_clock_hw_cycles_per_sec(), CONFIG_SYS_CLOCK_TICKS_PER_SEC);
 
