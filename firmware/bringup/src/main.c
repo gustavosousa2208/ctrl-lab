@@ -256,5 +256,35 @@ int main(void)
 	printk("at 1 kHz a control step may use %u cycles\n",
 	       sys_clock_hw_cycles_per_sec() / 1000U);
 
+#ifdef CONFIG_RTT_CONSOLE
+	/* Do not let the CPU idle when the console is RTT.
+	 *
+	 * RTT is read out of target RAM by the debug probe over SWD, so it only
+	 * works while the debug port is alive. Returning from main() lets Zephyr's
+	 * idle thread execute WFI, and on the STM32H743 that takes the core domain
+	 * off the debug bus: J-Link then reports "DAP initialized successfully"
+	 * followed by "Can not attach to CPU", and OpenOCD reads
+	 * "Cortex-M PARTNO 0x0". The board looks bricked and is not - but the only
+	 * way back in is BOOT0 plus a power cycle, which is a miserable thing to
+	 * need after every run.
+	 *
+	 * CONFIG_STM32_ENABLE_DEBUG_SLEEP_STOP is the documented fix and is set in
+	 * rtt.conf, but it did not hold on this part. Measured on hardware
+	 * 2026-09-06: the core still became unreachable after the probe finished.
+	 *
+	 * So the probe simply never finishes. A busy loop costs nothing here - this
+	 * is a bring-up probe that has already printed everything it has to say -
+	 * and it keeps the debug port up so the transcript can actually be read.
+	 *
+	 * The F767 does not need this: its console is a UART, readable with no
+	 * debugger attached at all, which is why this is guarded.
+	 */
+	printk("\nholding the CPU awake so RTT stays readable (see main.c)\n");
+	while (1) {
+		/* Deliberately not k_sleep(): sleeping is the thing being avoided. */
+		arch_nop();
+	}
+#endif
+
 	return 0;
 }

@@ -1,11 +1,12 @@
 # Bring-up
 
-Two boards appear here. The project moved to the **NUCLEO-F767ZI** on
-2026-09-05; the **WeAct MiniSTM32H743** sections are kept below because they
-still hold for that board, and most of the analysis carried over intact.
+Two boards appear here, and as of 2026-09-06 **both are running**. The
+NUCLEO-F767ZI is the controller; the WeAct MiniSTM32H743 was brought up for the
+stage E two-board HIL loop and is the plant.
 
-- [The NUCLEO-F767ZI](#the-nucleo-f767zi) — current target.
-- [The WeAct MiniSTM32H743](#the-weact-ministm32h743) — previous target.
+- [The NUCLEO-F767ZI](#the-nucleo-f767zi) — controller.
+- [The WeAct MiniSTM32H743](#the-weact-ministm32h743) — plant, running since
+  2026-09-06.
 
 ## The NUCLEO-F767ZI
 
@@ -275,10 +276,89 @@ pipeline, not new code.
 
 ## The WeAct MiniSTM32H743
 
-Previous target, retained for reference. Everything below was **built and
-verified** against Zephyr v4.3.0 on `remote-macos-gusta-mac` on 2026-09-04. No
-hardware was attached — a build proves configuration and linking, not runtime
-behavior.
+**Running on hardware since 2026-09-06 [V]** — flashed over SWD with a J-Link,
+console over SEGGER RTT. Brought up as the plant end of the stage E two-board
+loop. The analysis below it was written on 2026-09-04 without hardware; the
+runtime results are in the next section and the older analysis held up.
+
+### What the board says
+
+```
+board mini_stm32h743/stm32h743xx, SoC stm32h743xx
+DTCM is 128 KB at 0x20000000
+signal_pool @ 0x20000100  in DTCM
+state_pool  @ 0x20000000  in DTCM
+icache=1 dcache=1 fpu_dp=1
+core 240000000 Hz, kernel tick 10000 Hz
+DWT: lsr_at_entry=0x00000000 (was already unlocked) ctrl=0x40000001 cyccnt=running
+63 dependent f32 MACs: first=768 best=760 worst=768 cycles (spread 8)
+```
+
+Every question the probe asks, answered on this part: **the overlay works and
+the pools are in DTCM**, `fpu_dp=1` so f64 is hardware here too, and the cycle
+counter runs at the full 240 MHz. As on the F767, the DWT Lock Access Register
+was **already unlocked** at entry, and both enable sequences work.
+
+### It is much faster than the F767, and that was not expected
+
+Same source, same SDK, same 63 dependent f32 MACs:
+
+| | F767ZI @216 MHz | H743 @240 MHz |
+| --- | --- | --- |
+| cycles | 1653–1670 (spread 17) | **760–768 (spread 8)** |
+| wall clock | 7.65–7.73 us | **3.17–3.20 us** |
+
+**2.2x fewer cycles, 2.4x faster in wall clock.** For identical code on two
+Cortex-M7 cores, that has to be instruction fetch: the H7 reads flash 256 bits
+at a time over AXI, against the F7's 128-bit ART path. **[V]** for the numbers,
+**[I]** for the reason — it has not been isolated, and a controller that must
+hit a deadline on both boards should be sized against the F767.
+
+### Caches are NOT free here, unlike on the F767
+
+| | caches on | caches off | delta |
+| --- | --- | --- | --- |
+| F767ZI | 1653–1670 | 1653–1670 | **bit-identical** |
+| H743 | 760–768, spread 8 | 775–785, spread 10 | **~15 cycles, ~2%** |
+
+The F767 section below predicted this: *"a difference from the H743, where ART
+is not the same mechanism."* Confirmed. The working set is entirely in DTCM on
+both boards, so this is instruction fetch, and the H7 has no ART accelerator to
+make L1 redundant. Small, but no longer zero — and it means the F767's "caches
+cost nothing" result must not be generalised to this part. **[V]**
+
+### RTT on this board: three traps, all of them measured
+
+The console is USB CDC ACM by default, which loses everything printed before
+enumeration and puts a USB device stack on the control path. RTT avoids both,
+and cost three separate failures to get working. `firmware/bringup/rtt.conf`
+carries the fixes and the reasoning; the short version:
+
+1. **The D-cache eats RTT.** The Cortex-M7 writes the RTT buffer into cache and
+   the debug probe reads physical SRAM through the AHB-AP, so it sees nothing.
+   The symptom is precise and misleading: the `"SEGGER RTT"` magic string is
+   visible at `_SEGGER_RTT` — one cache line happened to be evicted — while
+   `MaxNumUpBuffers` immediately after it still reads `0`, so the host reports
+   *"RTT Control Block not found"* for a block that is plainly in memory.
+   Fix: `CONFIG_SEGGER_RTT_SECTION_DTCM=y`. DTCM is never cached, which is the
+   same reason the signal and state pools live there.
+2. **Idle kills the debug port.** RTT is read over SWD, so it only works while
+   the debug port is alive. When `main()` returns, Zephyr idles into WFI and the
+   H743 takes the core domain off the debug bus: J-Link reports *"DAP initialized
+   successfully"* then *"Can not attach to CPU"*, and OpenOCD reads
+   *"Cortex-M PARTNO 0x0"*. The board looks bricked and is not — but the only way
+   back in is BOOT0 plus a power cycle. `CONFIG_STM32_ENABLE_DEBUG_SLEEP_STOP=y`
+   is the documented fix and **did not hold on this part**; the probe therefore
+   ends in a busy loop under `#ifdef CONFIG_RTT_CONSOLE` instead. With that in
+   place the board stays attachable and can be reflashed with no button presses.
+3. **`JLinkRTTLogger` never found the block**, with or without
+   `-RTTSearchRanges`. Reading the control block and its buffer directly with
+   `mem32`/`mem8` works and is what produced the transcript above: the CB gives
+   `pUp` and `WrOff`, and the bytes are just there.
+
+Recovery, if the board ever does stop responding: hold BOOT0, power-cycle, keep
+it held about a second, release. That runs the ROM bootloader, which never
+sleeps, so the core stays attachable. Then flash normally.
 
 ### Disk footprint
 
