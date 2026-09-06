@@ -25,3 +25,9 @@ frontend/vite.config.d.ts
 # The natively-built firmware host harness (firmware/ctrl/host/build.sh).
 # Zephyr build trees live outside the repo entirely - see firmware/scripts/.
 firmware/ctrl/host/ctrl-host
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
