@@ -14,13 +14,20 @@
   idles in WFI and a hotplug attach fails with "Unable to read device id from
   ROM table". Under Reset holds NRST while connecting, so it always attaches.
 
-  Usage:  .\console.ps1 [-Port COM5] [-Baud 115200] [-Seconds 10] [-NoReset]
+  The default baud matches firmware/ctrl (CTRL_CONSOLE_BAUD). The bringup probe
+  still runs at the board default, so read it with -Baud 115200.
+
+  921600 was measured, not chosen: over five captures per rate, 115200 lost or
+  mangled rows on most runs while 460800 and 921600 were clean every time. The
+  loss is time-in-flight, not rate.
+
+  Usage:  .\console.ps1 [-Port COM5] [-Baud 921600] [-Seconds 10] [-NoReset]
           Omit -Port to auto-pick the ST-Link VCP.
           -NoReset just listens, for firmware that prints continuously.
 #>
 param(
     [string]$Port,
-    [int]$Baud    = 115200,
+    [int]$Baud    = 921600,
     [int]$Seconds = 10,
     [switch]$NoReset
 )

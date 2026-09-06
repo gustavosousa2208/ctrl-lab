@@ -76,24 +76,48 @@ F7's ART accelerator covers instruction fetch from flash independently of L1.
 **[I]** for the explanation, **[V]** for the numbers. This closes the open item
 carried since bring-up.
 
-### The console drops bytes, and that is why the digest exists
+### The console was dropping bytes; 921600 fixed it
 
-A 501-row trace arrives with **0 to 9 rows mangled**, and sometimes up to 22
-rows missing outright, in different places every run. Measured over five
-consecutive captures: 501/501/499/479/501 rows arriving, 0-9 of them damaged.
+**Largely solved by moving to 921600 baud** — but the digest is what proved the
+firmware was never at fault while it was being solved.
 
-This is the ST-Link VCP and the host serial stack, not the firmware. The digest
-is computed on-device from memory before anything is printed, and it was
-**correct on every run of the day**, including the worst-corrupted ones.
+At the board's default 115200, a 501-row trace arrived with rows lost or mangled
+on most runs. Raising the console baud fixes it, and the measurement went the
+*opposite* way to the intuition that a faster line would overrun a buffer
+harder. Five captures per rate:
 
-Two things were tried. Pacing the device output with `k_msleep(1)` per row did
-nothing and was reverted. Setting `clocal -crtscts` on the host helped
-substantially — macOS defaults the port to hardware flow control that the VCP
-does not drive — and `console.py` now sets it, but the loss is not fully gone.
+| baud | rows lost | rows damaged | capture |
+| --- | --- | --- | --- |
+| 115200 | 0-2 | 0-3 | 3.6 s |
+| 230400 | 0 | 0-1 | 2.2 s |
+| 460800 | **0** | **0** | 1.4 s |
+| 921600 | **0** | **0** | 1.0 s |
 
-So `grade-trace.py` matches rows to the reference **by their time value rather
-than by position** (a dropped row must not shift every comparison after it),
-counts and skips damaged rows, and lets the digest decide the verdict.
+The loss is a *time-in-flight* problem, not a rate problem: less wall-clock
+spent streaming means fewer windows in which the host can be late. 921600 is
+also the ceiling — macOS rejects every rate above it on this driver (500000 and
+1000000 included; only the standard ladder is accepted). **[V]**
+
+Throughout all of it the on-device digest was **correct on every single run**,
+including the worst-corrupted ones, because it is computed from memory before
+anything is printed. That is the whole argument for having it.
+
+Three things were tried before the baud change, and the order is instructive.
+Pacing the device output with `k_msleep(1)` per row did nothing and was reverted
+— the guess that the ST-Link's buffer was overrunning was simply wrong. Setting
+`clocal -crtscts` on the host helped materially, because macOS defaults the port
+to hardware flow control the VCP does not drive. And a **measurement bug of my
+own** inflated the early numbers: `console.py` did not drain the receive buffer
+before resetting, so it was reading a stale trace left over from the flash —
+reporting captures faster than the line rate, and occasionally *more* rows than
+the run has steps. `console.ps1` had always done this correctly with
+`DiscardInBuffer()`; the Python version simply lacked it.
+
+`grade-trace.py` still matches rows to the reference **by their time value
+rather than by position** (a dropped row must not shift every comparison after
+it), counts and skips damaged rows, and lets the digest decide the verdict. That
+is worth keeping now that the link is clean: the next transport is a wire
+between two MCUs, and it will not be.
 
 ## The two builds
 

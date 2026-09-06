@@ -1,5 +1,30 @@
 cmake_minimum_required(VERSION 3.20.0)
 
+# Console baud, as a devicetree overlay generated before Zephyr reads the
+# devicetree - which is why this block sits above find_package().
+#
+#   west build ... -- -DCTRL_CONSOLE_BAUD=921600
+#
+# The board .dts fixes usart3 at 115200, and that line is the trace transport:
+# a 501-step run is ~31 KB of console output. Whether raising it helps is an
+# empirical question - the bytes are being lost in a buffer, and a higher rate
+# fills that buffer faster - so this exists to measure rather than to assume.
+# 921600, not the board default of 115200. Measured 2026-09-06 over five
+# captures per rate, and the result went the opposite way to the guess: faster
+# is CLEANER, not noisier.
+#
+#   115200  0-2 rows lost, 0-3 damaged, 3.6 s
+#   230400  0 lost,         0-1 damaged, 2.2 s
+#   460800  0 lost,         0 damaged,   1.4 s
+#   921600  0 lost,         0 damaged,   1.0 s
+#
+# The loss is a time-in-flight problem, not a rate problem: less wall-clock
+# spent streaming means fewer windows in which the host can be late. 921600 is
+# also the ceiling - macOS rejects every rate above it on this driver.
+set(CTRL_CONSOLE_BAUD "921600" CACHE STRING "usart3 console baud rate")
+configure_file(console-baud.overlay.in ${CMAKE_CURRENT_BINARY_DIR}/console-baud.overlay @ONLY)
+list(APPEND EXTRA_DTC_OVERLAY_FILE ${CMAKE_CURRENT_BINARY_DIR}/console-baud.overlay)
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(ctrl_lab_control_runtime)
 
@@ -29,7 +54,7 @@ list(LENGTH CTRL_REF_LINES CTRL_REF_COUNT)
 math(EXPR CTRL_PLAN_STEPS "${CTRL_REF_COUNT} - 1")
 
 configure_file(plan_blob.h.in ${CMAKE_CURRENT_BINARY_DIR}/include/plan_blob.h @ONLY)
-message(STATUS "ctrl: plan ${CTRL_PLAN}, ${CTRL_PLAN_STEPS} steps")
+message(STATUS "ctrl: plan ${CTRL_PLAN}, ${CTRL_PLAN_STEPS} steps, console ${CTRL_CONSOLE_BAUD} baud")
 
 target_include_directories(app PRIVATE src ${CMAKE_CURRENT_BINARY_DIR}/include)
 target_sources(app PRIVATE

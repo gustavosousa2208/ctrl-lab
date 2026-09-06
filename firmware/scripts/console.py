@@ -36,7 +36,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", default=None)
     parser.add_argument("--out", default=None, help="also write the capture here")
-    parser.add_argument("--baud", type=int, default=115200)
+    # Matches firmware/ctrl's CTRL_CONSOLE_BAUD default. The bringup probe still
+    # runs at the board default, so read it with --baud 115200.
+    parser.add_argument("--baud", type=int, default=921600)
     parser.add_argument("--until", default="done", help="stop once this line appears")
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--no-reset", action="store_true")
@@ -50,14 +52,49 @@ def main():
     # these two flags a 501-row trace arrives with one to three mangled rows, in
     # different places every run; with them, 501 rows and zero. -ixon/-ixoff for
     # the same reason, so no data byte is ever read as a flow-control character.
-    subprocess.run(
+    # macOS accepts only the standard rate ladder on this driver: 115200,
+    # 230400, 460800, 921600. 500000, 1000000 and anything above 921600 come
+    # back as `tcsetattr: Invalid argument`. Measured 2026-09-06 - so 921600 is
+    # the ceiling for the ST-Link VCP path, and a faster link means USB, not a
+    # bigger number here.
+    stty = subprocess.run(
         ["stty", "-f", port, str(args.baud), "cs8", "-cstopb", "-parenb", "raw", "-echo",
          "clocal", "-crtscts", "-ixon", "-ixoff"],
-        check=True,
+        capture_output=True,
+        text=True,
     )
+    if stty.returncode != 0:
+        sys.exit(
+            f"stty rejected {args.baud} baud on {port}: {stty.stderr.strip()}\n"
+            f"macOS supports 115200, 230400, 460800, 921600 on this port."
+        )
 
     # Open before resetting, so nothing printed at boot is lost.
     fd = os.open(port, os.O_RDONLY | os.O_NONBLOCK)
+
+    # Then throw away whatever is already queued.
+    #
+    # This is not tidiness, it is correctness. Flashing resets the board, so by
+    # the time this script runs the device has usually already booted and dumped
+    # an entire trace into the OS receive buffer. Without this drain the read
+    # loop below returns that stale trace, sees its `done`, and exits - reporting
+    # a capture that is faster than the line rate and sometimes has MORE rows
+    # than the run has steps, because it spans two boots. Both symptoms were
+    # observed before this was added.
+    drained = 0
+    while True:
+        ready, _, _ = select.select([fd], [], [], 0.3)
+        if not ready:
+            break
+        try:
+            chunk = os.read(fd, 65536)
+        except BlockingIOError:
+            break
+        if not chunk:
+            break
+        drained += len(chunk)
+    if drained:
+        print(f"[drained {drained} stale bytes before reset]", file=sys.stderr)
 
     if not args.no_reset:
         subprocess.run(

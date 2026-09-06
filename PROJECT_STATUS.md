@@ -243,12 +243,23 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 
 ## Loose ends
 
-- **The board's console drops bytes** — measured over five consecutive
-  captures, 501/501/499/479/501 rows arrived of 501, with 0 to 9 of them
-  damaged. It is the ST-Link VCP and the host serial stack, not the firmware:
-  the on-device digest is computed from memory before anything is printed and
-  was correct on every run of the day, including the worst-corrupted one. This
-  is the single best argument for why the digest exists. Two fixes were tried: device-side pacing (`k_msleep(1)` per row) did
+- ~~**The board's console drops bytes.**~~ **Fixed by raising the console to
+  921600 baud**, which is now the default in `firmware/ctrl` and in both console
+  scripts. Zero rows lost or damaged across nine captures at 460800 and 921600,
+  against 0-2 lost and 0-3 damaged per run at the board's default 115200. The
+  intuition that a faster line would overrun a buffer harder was wrong: the loss
+  is *time-in-flight*, so a shorter stream is a cleaner one. 921600 is also the
+  ceiling — macOS rejects every rate above it on this driver. **[V]**
+  - The bringup probe still runs at 115200; read it with `--baud 115200`.
+  - Two earlier attempts failed and are recorded in `firmware/ctrl/README.md`:
+    a firmware-side `k_msleep(1)` per row (did nothing, reverted) and host
+    `stty clocal -crtscts` (helped materially, kept).
+  - **The loss figures published earlier today were partly my own measurement
+    bug.** `console.py` did not drain the receive buffer before resetting, so it
+    was reading a stale trace left over from the flash — which reported captures
+    faster than the line rate and sometimes *more* rows than the run has steps.
+    `console.ps1` had always done this right with `DiscardInBuffer()`. Fixed;
+    all numbers above are from clean captures. Two fixes were tried: device-side pacing (`k_msleep(1)` per row) did
   nothing and was reverted; **`stty clocal -crtscts` helped substantially**,
   because macOS defaults the port to hardware flow control the VCP does not
   drive. `console.py` sets it. The loss is reduced, not eliminated, so

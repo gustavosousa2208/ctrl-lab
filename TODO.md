@@ -60,10 +60,11 @@ Staged plan in [`POC-PLAN.md`](POC-PLAN.md) — PID on one STM32
   1 step in 500 costs ~3930 extra cycles. Worst uninterrupted step is 3992.
 - **Caches cost nothing**, now measured with a cacheable working set rather than
   only DTCM.
-- **The console drops bytes** (0-9 damaged and up to 22 missing per 501 rows),
-  so `grade-trace.py` matches by time rather than position and the on-device
-  digest decides the verdict. Not a firmware fault; the digest was right on
-  every run.
+- ~~**The console drops bytes.**~~ **Fixed**: the console runs at 921600 now,
+  and nine captures at 460800/921600 lost nothing at all. The loss was
+  time-in-flight, not rate — faster is cleaner. `grade-trace.py` still matches
+  by time rather than position and still lets the digest decide, which is worth
+  keeping for the MCU-to-MCU link in stage E.
 - **`-ffp-contract=off` is load-bearing.** Compiler FMA contraction changes the
   trace digest on three of four fixtures while staying *inside* the 5.8e-6
   tolerance — a wrong answer a tolerance check passes. Both firmware builds set
