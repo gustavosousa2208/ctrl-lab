@@ -34,6 +34,8 @@
 *.dts         text eol=lf
 *.dtsi        text eol=lf
 CMakeLists.txt text eol=lf
+*.py          text eol=lf
+*.h.in        text eol=lf
 
 # Reference traces are compared byte-for-byte by the golden tests, and the
 # committed control plans are binary. Neither may be rewritten by git.

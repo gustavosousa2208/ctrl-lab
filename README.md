@@ -15,12 +15,15 @@ adding anything.
 | --- | --- |
 | **Frontend** (`frontend/`) | Working. React + React Flow canvas editor in a Tauri v2 desktop shell: block library, project save/open, scope plotting, compile report. |
 | **Backend** (`backend/`) | Working. Rust crate `ctrl-backend`: project parsing, validation, and a deterministic fixed-step simulator, verified sample-by-sample against MATLAB references. |
-| **Firmware** (`firmware/`) | **Design plus a bring-up probe running on real hardware.** `firmware/AGENTS.md` specifies the target runtime; `firmware/bringup/` runs on a **NUCLEO-F767ZI** and has settled the DTCM, console, cycle-counter and cache questions. There is no control runtime yet. |
+| **Firmware** (`firmware/`) | **A bring-up probe running on real hardware, and a control runtime that is written but not yet flashed.** `firmware/bringup/` runs on a **NUCLEO-F767ZI** and has settled the DTCM, console, cycle-counter and cache questions. `firmware/ctrl/` is the plan loader, two-pass scheduler and kernel library: it reproduces the f32 reference **bit-for-bit** on every fixture and builds warning-free for the board. |
 
-Deployment to hardware does not exist yet. The backend→firmware wire format
-(the "Deployable Control Plan") is implemented and can be compiled, inspected and
-executed on the host in `f32` exactly as the firmware must — see
-[`POC-PLAN.md`](POC-PLAN.md) for the staged route to running it on a board, and
+Nothing has run a controller on the board yet, but the gap is now one flash
+wide. The backend→firmware wire format (the "Deployable Control Plan") is
+implemented, and the firmware that executes it is written and verified: the same
+C sources build for the NUCLEO-F767ZI and natively, and the native build agrees
+with the `f32` reference executor bit-for-bit on all four fixtures. See
+[`POC-PLAN.md`](POC-PLAN.md) for the staged route, `firmware/ctrl/README.md` for
+what the runtime does and does not do, and
 [`PROJECT_STATUS.md`](PROJECT_STATUS.md) for where things stand right now.
 
 ## Layout
@@ -35,12 +38,15 @@ backend/             Rust: parse -> validate -> simulate -> compile a control pl
   src/exec.rs          f32 reference executor; the firmware's executable spec
   AGENTS.md            numerical contract, and the f32 bound
 frontend/            Vite + React + React Flow editor, and the Tauri shell in src-tauri/
-firmware/            design + a bring-up probe running on hardware; no runtime yet
+firmware/            a bring-up probe on hardware, and the control runtime
   AGENTS.md            target runtime architecture
   BRINGUP.md           board facts, disk footprint, what to copy from other boards
   ZEPHYR-WORKSPACE.md  the Mac build environment and its local patches
   bringup/             minimal Zephyr app; runs on a NUCLEO-F767ZI
-  scripts/             build (WSL), flash and console (Windows)
+  ctrl/                the control runtime: loader, scheduler, kernels
+    README.md            what it does, how to grade it, and the FMA trap
+    host/                the same sources built natively, for grading off-target
+  scripts/             build (WSL/macOS), flash and console (Windows), trace grading
 test-projects/       .json fixtures, .m MATLAB references, and the golden traces:
                        NN-*.ref.csv   MATLAB f64 reference
                        NN-*.plan.dcp  compiled plan, the exact bytes the MCU loads
@@ -100,7 +106,7 @@ cargo run --manifest-path backend/Cargo.toml --example trace -- test-projects/04
 
 ```bash
 bun run verify        # backend tests + frontend build
-bun run backend:test  # 52 unit + 6 vector/golden tests
+bun run backend:test  # 53 unit + 6 vector/golden tests
 bun run frontend:build
 ```
 
@@ -115,6 +121,19 @@ matlab -batch "cd('test-projects'); eval(fileread('04-2nd-order-system.m'))"
 The frontend has no automated test suite. `frontend/AGENTS.md` lists the manual
 checks to run before finishing a frontend change.
 
+The firmware control core is graded separately, and does not need the board:
+
+```bash
+bash firmware/ctrl/host/build.sh
+./firmware/ctrl/host/ctrl-host test-projects/04-2nd-order-system.plan.dcp 501 \
+  | python3 firmware/scripts/grade-trace.py test-projects/04-2nd-order-system.f32.csv
+```
+
+The bar is bit-for-bit, not a tolerance — `exec::trace_digest` hashes the raw
+sample bits, `ctrl-backend --trace-hash` prints the value to match, and all four
+digests are pinned in the backend test suite. `firmware/ctrl/README.md` explains
+why a tolerance is not enough here.
+
 ## Further reading
 
 - [`POC-PLAN.md`](POC-PLAN.md) — staged plan for the first controller on real
@@ -126,6 +145,8 @@ checks to run before finishing a frontend change.
   Deployable Control Plan container
 - [`frontend/AGENTS.md`](frontend/AGENTS.md) — editor invariants and the manual
   regression checklist
+- [`firmware/ctrl/README.md`](firmware/ctrl/README.md) — the control runtime:
+  how to build and grade it, and why `-ffp-contract=off` decides correctness
 - [`firmware/BRINGUP.md`](firmware/BRINGUP.md) — what the board gives you, what
   it does not, disk footprint, and how to build the probe
 - [`firmware/ZEPHYR-WORKSPACE.md`](firmware/ZEPHYR-WORKSPACE.md) — the macOS

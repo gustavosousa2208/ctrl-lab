@@ -1,10 +1,16 @@
 # Firmware — Control Runtime Architecture
 
-Design draft (pre-Zephyr). This is the companion to the project philosophy in
+The design. Companion to the project philosophy in
 [`../AGENTS.md`](../AGENTS.md) and the numerical contract in
 [`../backend/AGENTS.md`](../backend/AGENTS.md). It defines *how* a validated
-controller executes deterministically on the microcontroller. No Zephyr code
-exists yet; this is the target we build against.
+controller executes deterministically on the microcontroller.
+
+**Partly built as of 2026-09-06.** The plan loader, the two-pass scheduler and
+all ten kernels exist in [`ctrl/`](ctrl/) and reproduce the f32 reference
+bit-for-bit on every committed fixture. The layers below that this file also
+describes -- the HAL, I/O binding, the lifecycle FSM and telemetry -- do not
+exist yet, and [`ctrl/README.md`](ctrl/README.md) is precise about the line
+between the two. Read this for the target; read that for what runs.
 
 ## The model: a stable runtime executing data (Fork A)
 

@@ -34,7 +34,14 @@ fn run() -> Result<(), String> {
 
     let mut emit_plan: Option<String> = None;
     let mut emit_trace: Option<String> = None;
+    let mut trace_hash = false;
     let project_path = match first.as_str() {
+        // Takes a project rather than an output path: it prints one line.
+        "--trace-hash" => {
+            trace_hash = true;
+            args.next()
+                .ok_or_else(|| format!("--trace-hash needs a project path\n{}", usage(&program)))?
+        }
         "--emit-plan" | "--emit-trace" => {
             let output = args
                 .next()
@@ -85,6 +92,22 @@ fn run() -> Result<(), String> {
             plan.signal_count,
             plan.state_len
         );
+        return Ok(());
+    }
+
+    // The bit-for-bit grading reference for a firmware trace. Prints the digest
+    // the device and the host harness must reproduce; see exec::trace_digest.
+    if trace_hash {
+        let plan = build_control_plan(&validated)
+            .map_err(|error| format!("plan generation failed: {error}"))?;
+        let simulation = &validated.metadata.simulation;
+        let steps = (simulation.end_time / simulation.step_size).floor() as usize + 1;
+        let trace =
+            exec::run(&plan, steps).map_err(|error| format!("plan execution failed: {error}"))?;
+
+        println!("steps={steps}");
+        println!("signals={}", trace.signals.len());
+        println!("trace_fnv1a64=0x{:016x}", exec::trace_digest(&trace));
         return Ok(());
     }
 
@@ -207,6 +230,7 @@ fn usage(program: &str) -> String {
          {program} <project.json>                          validate, simulate, report\n  \
          {program} --emit-plan <out.dcp> <project.json>    compile to a Deployable Control Plan\n  \
          {program} --emit-trace <out.csv> <project.json>   f32 reference trace (firmware contract)\n  \
+         {program} --trace-hash <project.json>             bit-for-bit digest for firmware grading\n  \
          {program} --dump-plan <in.dcp>                    inspect a compiled plan"
     )
 }

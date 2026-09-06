@@ -11,14 +11,18 @@
 
 ## Now
 
-Neither of the first two needs hardware. Current state and context:
-[`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+The runtime is written and correct off-target, so the board is the blocker
+again. Current state and context: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
 
 - ~~Backend/Firmware: reconcile `firmware/AGENTS.md` with what `plan.rs` actually encodes.~~ **Done.** The packed discrete state space wins over the biquad SOS cascade, **capped at order 2**. The cap was measured, not chosen: at order 3 a clustered-pole filter in f32 is already ~100× past the 5.8e-6 noise floor, and by order 6 it diverges outright. Both parsers now reject order > 2 — previously the discrete path had no check at all while the continuous path capped at 2, so a z-domain order 8 ran and produced nonsense. If order > 2 is ever needed, add the SOS cascade as a **new `KernelId`**; do not raise the constant. See `backend/AGENTS.md`, "Transfer function order limit".
-- Backend: settle `io_bindings` (always empty) and `wcet_estimate_ns` (hardcoded to 0, which makes the loader's designed WCET rejection check vacuous). **This is what is left of the DCP draft before a firmware kernel can be written.**
+- ~~Backend: settle `io_bindings` and `wcet_estimate_ns` before a firmware kernel can be written.~~ **The premise was wrong.** The kernels were written without either, and `POC-PLAN.md` had it right all along: `io_bind[]` blocks **stage E**, and `wcet_estimate_ns` is chicken-and-egg — hardware measures it, the backend then stamps it. Both are still open, just not here:
+  - `io_bindings` is always empty. `firmware/ctrl/src/dcp.c` *refuses* a non-empty one rather than pretending to bind channels it has no HAL for. Stage E.
+  - `wcet_estimate_ns` is hardcoded to 0, so the loader's WCET rejection check is written but vacuous. Stamp it from the `step_ns max` the device prints.
 - Frontend: run the `frontend/AGENTS.md` manual checklist against the transfer-function `domain` / `discreteVariable` inspector fields (`bfaa9c6`) — committed on a clean build but never exercised in the running app. The only committed change in the project with no verification behind it.
 - ~~Hardware: pick the board.~~ **Done** — NUCLEO-F767ZI, running the probe. No overlay was needed; the board already chooses DTCM. See [`firmware/BRINGUP.md`](firmware/BRINGUP.md).
-- Firmware: re-run the cache A/B once the runtime has a working set in `sram0`. The probe's "caches cost nothing" result is real but only covers DTCM-resident data, so it does not yet say anything about D-cache.
+- Firmware: **flash `ctrl` and grade the device trace.** Everything else is done — the runtime is bit-exact off-target, builds warning-free, and `flash.ps1 -App ctrl` needs no edit. The bar is the digest (`0xfddb22c1a9525b2c` for fixture 04), not the tolerance. Needs the Windows machine.
+- Firmware: re-run the cache A/B — `caches-off.conf` now exists for `ctrl`, whose ~68 KB trace buffer is the first cacheable working set in the project. The probe's "caches cost nothing" result only ever covered DTCM. The digest must be identical either way; only timing may move.
+- Firmware: drive the step from a hardware timer. It currently runs steps back to back, which is right for stage D's question but not a control loop.
 - Validation: document the exact RST equation form the project will use. Note that stage C established a PID needs no new kernel — a discrete PID *is* a second-order discrete transfer function, which the existing kernel already runs.
 
 ## Next
@@ -44,9 +48,16 @@ Staged plan in [`POC-PLAN.md`](POC-PLAN.md) — PID on one STM32
   `--emit-plan` / `--emit-trace` / `--dump-plan` are on the CLI; committed
   vectors and their regression tests are in place. Measured f32-vs-f64 bound:
   **5.8e-6**.
-- **Stage D is in progress.** The board is up; the runtime is not written. Before
-  the scheduler is written, note that the tick is **two passes** (all outputs,
-  then all state updates) — see `firmware/AGENTS.md`.
+- **Stage D is written and verified off-target.** `firmware/ctrl/` is the plan
+  loader, the two-pass scheduler and all ten kernels; it reproduces `exec.rs`
+  **bit-for-bit** on all four fixtures and builds warning-free for the board.
+  What remains is a flash and a device trace. The same sources also build
+  natively (`firmware/ctrl/host/`), which is how the numbers were verified
+  without hardware. See [`firmware/ctrl/README.md`](firmware/ctrl/README.md).
+- **`-ffp-contract=off` is load-bearing.** Compiler FMA contraction changes the
+  trace digest on three of four fixtures while staying *inside* the 5.8e-6
+  tolerance — a wrong answer a tolerance check passes. Both firmware builds set
+  the flag.
 - **Bring-up is finished, on hardware.** `firmware/bringup/` runs on
   `nucleo_f767zi`: the pools are in DTCM (verified at runtime, no overlay
   required), the console is `usart3` on the ST-Link VCP, the DWT cycle counter

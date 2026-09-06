@@ -26,8 +26,9 @@
 //! feed it `u[k-1]` instead, silently inserting a one-sample delay into the loop
 //! and changing the closed-loop dynamics.
 //!
-//! `firmware/AGENTS.md` currently describes a single walk of `blocks[]`. That
-//! description is incomplete; the scheduler needs both passes.
+//! `firmware/AGENTS.md` documents both passes, and `firmware/ctrl/src/runtime.c`
+//! implements them. The three are checked against each other by the trace
+//! digests below rather than by reading.
 
 use crate::plan::{BlockRecord, ControlPlan, KernelId};
 
@@ -396,6 +397,36 @@ pub struct ExecTrace {
     pub signals: Vec<Vec<f32>>,
 }
 
+/// FNV-1a64 over the raw little-endian bits of every sample in a trace, in
+/// emission order: each row's time, then that row's signals by slot.
+///
+/// This is how a firmware trace is graded bit-for-bit. Comparing against the
+/// committed `NN-*.f32.csv` can only ever support a *tolerance* claim, because
+/// nine decimal places do not always round-trip an f32 — a value of 1e-8 prints
+/// as `0.000000010`. Hashing the bits sidesteps the text entirely, and both
+/// `firmware/ctrl/host/` and the device compute the same digest over the same
+/// bytes (see `firmware/ctrl/src/trace.c`).
+///
+/// FNV-1a rather than a checksum because `plan.rs` already uses it for
+/// `plan_id`: one hash in the project, not two.
+pub fn trace_digest(trace: &ExecTrace) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut push = |value: f32| {
+        for byte in value.to_le_bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x100_0000_01b3);
+        }
+    };
+
+    for (k, time) in trace.times.iter().enumerate() {
+        push(*time);
+        for series in &trace.signals {
+            push(series[k]);
+        }
+    }
+    hash
+}
+
 /// Arms a plan and runs it for `steps` ticks, recording every signal.
 pub fn run(plan: &ControlPlan, steps: usize) -> Result<ExecTrace, ExecError> {
     let mut executor = PlanExecutor::new(plan);
@@ -433,6 +464,43 @@ mod tests {
             .join(format!("{name}.json"));
         parse_project_json(&std::fs::read_to_string(path).expect("fixture must be readable"))
             .expect("fixture must parse")
+    }
+
+    /// The firmware grading contract, pinned.
+    ///
+    /// These digests are what `firmware/ctrl/` must reproduce - the host
+    /// harness natively, and the board over its console. They were verified
+    /// bit-for-bit against the C control core on 2026-09-06.
+    ///
+    /// If a change here is deliberate, the firmware side moves with it. If it
+    /// is not, this test is the alarm: a digest change means every committed
+    /// f32 vector and every device trace just went stale, which the
+    /// tolerance-based tests can miss. `-ffp-contract=fast` on the C side, for
+    /// instance, changes these digests on three of four fixtures while still
+    /// landing inside the 5.8e-6 noise floor.
+    #[test]
+    fn firmware_trace_digests_are_pinned() {
+        let expected: [(&str, u64); 4] = [
+            ("01-double-integrator", 0xe4b8_b805_7816_2eaf),
+            ("02-feedback-TF", 0xf6a4_3fbf_fe09_b100),
+            ("03-TF-test", 0xf2ef_1769_744e_1a56),
+            ("04-2nd-order-system", 0xfddb_22c1_a952_5b2c),
+        ];
+
+        for (name, digest) in expected {
+            let dag = fixture(name);
+            let plan = build_control_plan(&dag).expect("plan must build");
+            let simulation = &dag.metadata.simulation;
+            let steps = (simulation.end_time / simulation.step_size).floor() as usize + 1;
+            let trace = run(&plan, steps).expect("execution must succeed");
+
+            assert_eq!(
+                trace_digest(&trace),
+                digest,
+                "{name}: trace digest changed - firmware traces and committed \
+                 f32 vectors are now stale"
+            );
+        }
     }
 
     /// The whole point of this module: the f32 plan executor must reproduce the

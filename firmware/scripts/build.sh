@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build a ctrl-lab firmware application in WSL.
+# Build a ctrl-lab firmware application (WSL or macOS).
 #
 #   build.sh <app-dir-under-firmware/> <board> [extra west args...]
 #
@@ -11,7 +11,14 @@
 #
 # e.g.  VARIANT=caches-off EXTRA_CONF=caches-off.conf build.sh bringup nucleo_f767zi
 set -e
-. "$(dirname "$0")/wsl-env.sh"
+
+# WSL and macOS both build; only WSL can flash. Pick the environment from the
+# host rather than making the caller remember which script to source.
+if [ "$(uname -s)" = "Darwin" ]; then
+    . "$(dirname "$0")/mac-env.sh"
+else
+    . "$(dirname "$0")/wsl-env.sh"
+fi
 
 APP="${1:?usage: build.sh <app> <board> [west args]}"
 BOARD="${2:?usage: build.sh <app> <board> [west args]}"

@@ -6,9 +6,9 @@ The handoff document. Refresh this file rather than starting a new one.
 | --- | --- |
 | Updated | 2026-09-06 |
 | Branch | `main`, clean, pushed |
-| HEAD | `481450f` |
-| Remote | `origin` = `git@github.com:gustavosousa2208/ctrl-lab.git` |
-| Tests | 58 passing (`bun run backend:test`) |
+| HEAD | `57c4585` |
+| Remote | `origin` = `git@gitea-local:gusta/ctrl-lab` — **changed**, see Loose ends |
+| Tests | 59 passing (`bun run backend:test`) |
 | Branches / stashes / tags | none besides `main` |
 | Untracked | `Open.ps1` only — a personal 2-line launcher, superseded by `bun run tauri:dev` |
 
@@ -18,8 +18,13 @@ Evidence tags: **[V]** verified by running it, **[I]** inferred, **[?]** unknown
 
 ```bash
 bun run setup     # frontend deps + backend build
-bun run verify    # 58 backend tests + frontend build
+bun run verify    # 59 backend tests + frontend build
 bun run tauri:dev # the desktop app
+
+# the firmware control core, graded against the reference without a board
+bash firmware/ctrl/host/build.sh
+./firmware/ctrl/host/ctrl-host test-projects/04-2nd-order-system.plan.dcp 501 \
+  | python3 firmware/scripts/grade-trace.py test-projects/04-2nd-order-system.f32.csv
 ```
 
 Works identically on Windows and macOS. **[V]** If you are cold, read
@@ -34,8 +39,9 @@ traces. Not a Simulink replacement — a focused platform for measuring the gap
 between simulation and embedded execution.
 
 Maturity: **editor and simulator work and are verified against MATLAB. The
-control runtime does not exist yet** — there is a design, and a bring-up probe
-that now runs on real hardware and has answered what it was written to ask.
+control runtime now exists and is numerically correct, but has not yet run on
+the board** — it reproduces the f32 reference bit-for-bit off-target, and builds
+warning-free for the NUCLEO-F767ZI. Flashing it needs the Windows machine.
 
 ## Layer status
 
@@ -43,7 +49,7 @@ that now runs on real hardware and has answered what it was written to ask.
 | --- | --- |
 | **Frontend** `frontend/` | Working. React Flow canvas in a Tauri v2 shell: block library, project save/open, scope plotting, compile report. No automated tests — see the manual checklist in `frontend/AGENTS.md`. |
 | **Backend** `backend/` | Working. Parse → validate → simulate (f64), plus `plan.rs` (compile to a Deployable Control Plan) and `exec.rs` (f32 reference executor). Verified sample-by-sample against MATLAB. |
-| **Firmware** `firmware/` | Design + a bring-up probe **running on a NUCLEO-F767ZI**. **No control runtime yet.** |
+| **Firmware** `firmware/` | A bring-up probe **running on a NUCLEO-F767ZI**, and `firmware/ctrl/` — the plan loader, two-pass scheduler and all ten kernels. **Bit-exact against the reference on all four fixtures, but not yet flashed.** See [`firmware/ctrl/README.md`](firmware/ctrl/README.md). |
 
 ## The three environments
 
@@ -53,8 +59,12 @@ that now runs on real hardware and has answered what it was written to ask.
 - **WSL / Ubuntu 24.04** on the same machine — **where the firmware is built**.
   Zephyr v4.3.0 at `3568e1b6d5c`, SDK 0.17.4, in `~/zephyrproject`.
 - **macOS** (`remote-macos-gusta-mac`, Tailscale `100.70.245.53`) — a second
-  Zephyr workspace at the same version. Not needed for firmware any more.
-  Checkout at `~/ctrl-lab`.
+  Zephyr workspace at the same version, and **a firmware build environment in
+  its own right**: `firmware/scripts/build.sh` detects the platform and sources
+  `mac-env.sh`, and the whole stack plus both firmware applications build here.
+  It cannot *flash* — the ST-Link enumerates on Windows.
+  Working checkout is `~/source/ctrl-lab`; `~/ctrl-lab` is a stale one, see
+  Loose ends. **[V]**
 
 Everything crosses between the machines through git, not file sync. The whole
 stack builds on Windows and macOS, verified from a clean clone. **[V]**
@@ -85,7 +95,7 @@ attributable to one transition. Full detail in [`POC-PLAN.md`](POC-PLAN.md).
 | --- | --- | --- |
 | A → B | MATLAB → ctrl-lab engine, both f64 | **done**, within 1e-6 |
 | C | the DCP format + f32 | **done**, bound 5.8e-6 |
-| D | C kernels + scheduler, 1 MCU | **in progress** — board is up, runtime not written |
+| D | C kernels + scheduler, 1 MCU | **in progress** — written and bit-exact off-target; not yet run on the board |
 | E | inter-MCU transport + delay | not started |
 | F | DAC/ADC, quantization, clock skew | not started |
 
@@ -101,6 +111,36 @@ attributable to one transition. Full detail in [`POC-PLAN.md`](POC-PLAN.md).
    passes feeds it `u[k-1]` and silently inserts a sample of delay. Pinned by a
    test: the fused variant diverges by 1.2e-2, ~2000× the noise floor. **[V]**
    `firmware/AGENTS.md` has been corrected accordingly.
+
+### The stage D result, and the trap it found
+
+`firmware/ctrl/` is the control core: plan loader, two-pass scheduler, all ten
+kernels. It **reproduces `backend/src/exec.rs` bit-for-bit on all four
+fixtures** — not to a tolerance, to the bit. **[V]**
+
+That was established *without the board*, because the same sources also build
+natively (`firmware/ctrl/host/`). The board is now needed only to confirm that a
+different FPU agrees, which is a much smaller question than "is the runtime
+right".
+
+Bit-for-bit needed a new instrument. The committed `NN-*.f32.csv` files hold
+nine decimal places, and nine decimals do not always round-trip an f32, so they
+can only ever support a *tolerance* claim. `exec::trace_digest` hashes the raw
+sample bits instead; `ctrl-backend --trace-hash` prints it, both harnesses
+print it, and `firmware_trace_digests_are_pinned` pins all four in the test
+suite.
+
+**The trap: `-ffp-contract=off` is load-bearing.** GCC and Clang default to
+fusing `acc += a * b` into an FMA, whose un-rounded intermediate is *more*
+accurate than the Rust reference — and therefore wrong, since the contract is
+bit-for-bit. Measured on the host harness: contraction changes the digest on
+**three of the four fixtures**, and its worst error, **4.1e-6, is still inside
+the 5.8e-6 noise floor**. A tolerance-based grading passes it silently. Both
+builds now set the flag, and both say why. **[V]**
+
+This is the same failure shape as the fused-passes bug and the order-3 transfer
+function: a wrong answer that looks close enough. It is the third one this
+project has caught by measuring instead of assuming.
 
 ## Hardware
 
@@ -149,17 +189,30 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 | Compile a plan | `cargo run --manifest-path backend/Cargo.toml -- --emit-plan out.dcp test-projects/04-2nd-order-system.json` | 355 bytes **[V]** |
 | Inspect a plan | `… -- --dump-plan out.dcp` | **[V]** |
 | f32 reference trace | `… -- --emit-trace out.csv <project.json>` | **[V]** |
-| Build firmware (WSL) | `bash firmware/scripts/build.sh bringup nucleo_f767zi -p always` | **[V]** |
+| Build the probe | `bash firmware/scripts/build.sh bringup nucleo_f767zi -p always` | **[V]** WSL and macOS |
+| Build the runtime | `bash firmware/scripts/build.sh ctrl nucleo_f767zi -p always` | **[V]** warning-free, 30 KB flash / 75 KB RAM / 384 B DTCM |
+| Host harness | `bash firmware/ctrl/host/build.sh` | **[V]** |
+| Grade a trace | `./firmware/ctrl/host/ctrl-host <plan.dcp> <steps> \| python3 firmware/scripts/grade-trace.py <ref.f32.csv>` | **[V]** PASS on all four |
+| Bit-exact digest | `cargo run --manifest-path backend/Cargo.toml -- --trace-hash test-projects/04-2nd-order-system.json` | **[V]** matches the C core |
 | Flash it (Windows) | `firmware\scripts\flash.ps1` | **[V]** |
 | Read the console (Windows) | `firmware\scripts\console.ps1` | resets, then reads **[V]** |
 | Desktop app | `bun run tauri:dev` | compiles on both platforms; **not run in a GUI session** **[?]** |
 
 ## Loose ends
 
+- **There are two checkouts on the Mac, and they disagree.** Work happens in
+  `~/source/ctrl-lab` (this one, `origin` = `git@gitea-local:gusta/ctrl-lab`).
+  `~/ctrl-lab` is an older clone at `7585ca9`, clean, pointing at
+  `git@github.com:gustavosousa2208/ctrl-lab.git` — the remote every document
+  before this one names. **Which remote is authoritative is an open question for
+  the author**; both were reachable when checked. The stale checkout is also
+  what is serving the Vite process below. Delete it or re-point it, but do not
+  leave two clones with different remotes. **[V]**
 - **A Vite dev server may still be running on the Mac** — started 2026-09-04,
-  pid 84712, bound to `100.70.245.53:5173` (tailnet only, not the LAN). Stop it
-  with `ssh remote-macos-gusta-mac 'kill 84712'`. Harmless if left; it will not
-  survive a reboot.
+  pid 84712, bound to `100.70.245.53:5173` (tailnet only, not the LAN). Still
+  running as of 2026-09-06, out of `~/ctrl-lab/frontend` — the stale checkout
+  above, so it is serving four-commit-old code. `kill 84712`. Harmless if left;
+  it will not survive a reboot. **[V]**
 - **The editor's discrete-transfer-function fields were never exercised in the
   running app.** Committed in `bfaa9c6` on a clean build, but the
   `frontend/AGENTS.md` manual checklist needs a human at the app. **[?]** This is
@@ -186,10 +239,22 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 ## Open decisions
 
 - ~~Which board.~~ **Settled** — NUCLEO-F767ZI, running. See Hardware above.
-- **The DCP is a draft, not a frozen wire format.** Nothing has decoded a plan
-  except its own round-trip test. `io_bindings` is always empty and
-  `wcet_estimate_ns` is hardcoded to `0`, which makes the loader's designed WCET
-  rejection check vacuous.
+- **The DCP is a draft, but it is no longer unread.** An independent decoder now
+  exists — `firmware/ctrl/src/dcp.c` — and it round-trips every committed plan,
+  so the format has been exercised by something other than its own encoder.
+  Rejection paths are exercised too: corrupt body, truncation, bad magic, and
+  both version gates. **[V]** What is still open is the two empty fields:
+  `io_bindings` is always empty (the loader *refuses* a non-empty one rather
+  than pretending to bind) and `wcet_estimate_ns` is hardcoded to `0`, which
+  makes the loader's WCET rejection check vacuous. The check is written; the
+  backend has nothing to stamp yet.
+- **The two planning documents disagreed about what these block, and POC-PLAN
+  was right.** `PROJECT_STATUS.md` called them "what is left of the DCP draft
+  before a firmware kernel can be written"; `POC-PLAN.md` (lines 311-315) has
+  `io_bind[]` blocking **stage E**, not D, and `wcet_estimate_ns` as
+  chicken-and-egg — hardware measures it, the backend then stamps it. Stage D
+  was written without either, which settles it in POC-PLAN's favour. The
+  ordering below reflects that.
 - ~~`firmware/AGENTS.md` and `plan.rs` disagree on the transfer-function
   kernel.~~ **Settled** — the packed discrete state space wins, **capped at
   order 2**, and the docs now say so. The cap is measured, not chosen: at order
@@ -206,30 +271,38 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 
 ## Next actions
 
-Ordered. Bring-up is finished, so the board no longer blocks anything — the
-blocker is now a decision, not hardware.
+Ordered. The runtime is written and correct off-target, so **the board is the
+blocker again** — items 1 to 3 all need a flash from Windows.
 
-1. **Settle `io_bindings` and `wcet_estimate_ns`.** The kernel-form question is
-   now closed; these two are what is left of the DCP draft. `io_bindings` is
-   always empty and `wcet_estimate_ns` is hardcoded to `0`, which makes the
-   loader's designed WCET rejection check vacuous. No hardware needed.
-2. **Stage D proper**: write the plan loader, the kernel dispatch table and the
-   two-pass scheduler. Grade the device trace against
-   `test-projects/NN-*.f32.csv`; the bar is bit-for-bit, and the f32 noise floor
-   is 5.8e-6, so anything above that is a bug rather than precision loss.
-   Remember the tick is **two passes**, not one — fusing them cost 1.2e-2 on
-   fixture 04.
-3. **Re-run the cache A/B once the runtime touches `sram0`.** The probe's
-   "caches are free" result is real but only covers a DTCM-resident working set.
-4. **Run the `frontend/AGENTS.md` manual checklist** against `bfaa9c6` in the
-   desktop app. Still the only committed change with no verification behind it.
-5. Later, from `TODO.md`: frontend `graphIndex` consistency checks, golden
-   coverage of internal controller states, and the step/ramp/disturbance/noise
-   cases.
+1. **Flash `ctrl` and grade the device trace.** Everything for this is built and
+   verified except the flash itself:
+
+   ```powershell
+   # Windows, board attached. flash.ps1 already takes -App; no edit needed.
+   firmware\scripts\flash.ps1 -App ctrl
+   firmware\scripts\console.ps1 > run.txt
+   python3 firmware\scripts\grade-trace.py test-projects\04-2nd-order-system.f32.csv run.txt
+   ```
+
+   The bar is the digest, not the tolerance: `0xfddb22c1a9525b2c` for fixture 04.
+   The build must exist in WSL first — the Mac's build tree is not visible to
+   Windows, so re-run `build.sh ctrl nucleo_f767zi` there.
+2. **Re-run the cache A/B**, now that there is something to measure. Build with
+   `VARIANT=caches-off EXTRA_CONF=caches-off.conf`, then
+   `flash.ps1 -App ctrl -Variant caches-off`; the fragment is written and builds. The trace digest must be identical either way — only the timing may
+   move. The probe's "caches are free" result only ever covered DTCM.
+3. **Stamp `wcet_estimate_ns`** from the `step_ns max` the device prints, which
+   closes the chicken-and-egg POC-PLAN describes and makes the loader's WCET
+   rejection check mean something for the first time.
+4. **Drive the step from a hardware timer.** Steps currently run back to back;
+   the measurement from item 1 is what sizes the tick budget.
+5. Not blocked by the board: `io_bindings` (stage E), the
+   `frontend/AGENTS.md` manual checklist against `bfaa9c6` — still the only
+   committed change with no verification behind it — and the `TODO.md` backlog.
 
 ## History
 
-Three sessions, 2026-09-03 to 2026-09-06, from a project untouched since
+Four sessions, 2026-09-03 to 2026-09-06, from a project untouched since
 2026-07-24.
 
 **Recovery** (`37a9345`, `b449669`). The project was found with uncommitted work
@@ -279,3 +352,34 @@ never been locked. Three hypotheses about that anomaly were tested and rejected;
 it has not reproduced, and it is documented as unexplained rather than tidied
 away. The lesson written into `BRINGUP.md` covers all three misreads across the
 project: **read the generated `zephyr/.config`, not the Kconfig sources.**
+
+**Stage D, on the Mac** (this session). Moved the work to macOS and found the
+Mac could do more than the documents assumed: it carries the Zephyr SDK and a
+workspace at the same commit as WSL, so `build.sh` now detects the platform and
+both firmware applications build here. Only flashing still needs Windows.
+
+Then wrote the control core — `firmware/ctrl/`: plan loader, two-pass scheduler,
+all ten kernels — 1478 lines of C, 911 of them non-comment. It builds
+warning-free for the board, but the result that mattered came from building it a
+second way. The same sources
+compile natively under `firmware/ctrl/host/`, which turned "stage D is blocked
+on the board" into "stage D is blocked on a flash": the runtime was verified
+bit-for-bit against `exec.rs` on all four fixtures without hardware.
+
+Proving *bit*-for-bit needed a new instrument, because the committed CSVs hold
+nine decimals and nine decimals do not always round-trip an f32. Hashing the raw
+sample bits does — `exec::trace_digest`, `--trace-hash`, and four digests pinned
+in the test suite.
+
+The instrument immediately earned itself. `-ffp-contract=off` turns out to be
+load-bearing: with GCC's default contraction the C core produces different bits
+on three of the four fixtures, while its worst error stays *inside* the 5.8e-6
+noise floor. A tolerance check passes it. That is the third time this project
+has found a wrong answer hiding under a plausible one, after the fused passes
+and the order-3 transfer function.
+
+Two documentation conflicts were resolved by the work rather than by argument.
+`PROJECT_STATUS.md` claimed `io_bindings` and `wcet_estimate_ns` blocked stage D
+while `POC-PLAN.md` put `io_bind[]` at stage E; stage D was written without
+either, so POC-PLAN was right. And `firmware/AGENTS.md` still opened with "no
+Zephyr code exists yet", which stopped being true in this session.
