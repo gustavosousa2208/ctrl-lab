@@ -5,7 +5,7 @@ The handoff document. Refresh this file rather than starting a new one.
 | | |
 | --- | --- |
 | Updated | 2026-09-06 |
-| Branch | `main`, clean, **not pushed** — four commits ahead of `origin` |
+| Branch | `main`, clean, pushed |
 | HEAD | `481450f` |
 | Remote | `origin` = `git@github.com:gustavosousa2208/ctrl-lab.git` |
 | Tests | 58 passing (`bun run backend:test`) |

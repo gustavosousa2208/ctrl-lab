@@ -9,13 +9,13 @@ It is deliberately **not** a Simulink replacement. See [`AGENTS.md`](AGENTS.md)
 for the project philosophy, boundaries, and the decision filter used before
 adding anything.
 
-## Status (2026-09-04)
+## Status (2026-09-06)
 
 | Layer | State |
 | --- | --- |
 | **Frontend** (`frontend/`) | Working. React + React Flow canvas editor in a Tauri v2 desktop shell: block library, project save/open, scope plotting, compile report. |
 | **Backend** (`backend/`) | Working. Rust crate `ctrl-backend`: project parsing, validation, and a deterministic fixed-step simulator, verified sample-by-sample against MATLAB references. |
-| **Firmware** (`firmware/`) | **Design plus a build-verified bring-up probe.** `firmware/AGENTS.md` specifies the target runtime; `firmware/bringup/` builds for an STM32H743 and settles the DTCM, console and cache questions. There is no control runtime yet. |
+| **Firmware** (`firmware/`) | **Design plus a bring-up probe running on real hardware.** `firmware/AGENTS.md` specifies the target runtime; `firmware/bringup/` runs on a **NUCLEO-F767ZI** and has settled the DTCM, console, cycle-counter and cache questions. There is no control runtime yet. |
 
 Deployment to hardware does not exist yet. The backend→firmware wire format
 (the "Deployable Control Plan") is implemented and can be compiled, inspected and
@@ -35,11 +35,12 @@ backend/             Rust: parse -> validate -> simulate -> compile a control pl
   src/exec.rs          f32 reference executor; the firmware's executable spec
   AGENTS.md            numerical contract, and the f32 bound
 frontend/            Vite + React + React Flow editor, and the Tauri shell in src-tauri/
-firmware/            design + a build-verified bring-up probe; no runtime yet
+firmware/            design + a bring-up probe running on hardware; no runtime yet
   AGENTS.md            target runtime architecture
   BRINGUP.md           board facts, disk footprint, what to copy from other boards
   ZEPHYR-WORKSPACE.md  the Mac build environment and its local patches
-  bringup/             minimal Zephyr app that builds for an STM32H743
+  bringup/             minimal Zephyr app; runs on a NUCLEO-F767ZI
+  scripts/             build (WSL), flash and console (Windows)
 test-projects/       .json fixtures, .m MATLAB references, and the golden traces:
                        NN-*.ref.csv   MATLAB f64 reference
                        NN-*.plan.dcp  compiled plan, the exact bytes the MCU loads
@@ -99,7 +100,7 @@ cargo run --manifest-path backend/Cargo.toml --example trace -- test-projects/04
 
 ```bash
 bun run verify        # backend tests + frontend build
-bun run backend:test  # 51 unit + 6 vector/golden tests
+bun run backend:test  # 52 unit + 6 vector/golden tests
 bun run frontend:build
 ```
 
@@ -128,4 +129,5 @@ checks to run before finishing a frontend change.
 - [`firmware/BRINGUP.md`](firmware/BRINGUP.md) — what the board gives you, what
   it does not, disk footprint, and how to build the probe
 - [`firmware/ZEPHYR-WORKSPACE.md`](firmware/ZEPHYR-WORKSPACE.md) — the macOS
-  build environment, its local Zephyr patches, and which of them reach us
+  build environment, its local Zephyr patches, and which of them reach us. The
+  primary build environment is now WSL; see `firmware/BRINGUP.md`
