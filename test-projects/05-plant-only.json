@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "kind": "ctrl-lab-project",
+  "generatedAt": "2026-09-06T00:00:00.000Z",
+  "title": "",
+  "simulation": {
+    "endTime": 25,
+    "stepSize": 0.05,
+    "zoomStep": 0.05,
+    "zoom": 0.9,
+    "viewportX": 0,
+    "viewportY": 0
+  },
+  "nodes": [
+    {
+      "id": "step-1",
+      "type": "step",
+      "label": "Step",
+      "role": "step-01",
+      "position": {
+        "x": 120,
+        "y": 200
+      },
+      "rotation": 0,
+      "properties": {
+        "initialValue": "0.0",
+        "finalValue": "1.0",
+        "stepTime": "1.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "transferFunction-2",
+      "type": "transferFunction",
+      "label": "Plant",
+      "role": "tf-01",
+      "position": {
+        "x": 360,
+        "y": 200
+      },
+      "rotation": 0,
+      "properties": {
+        "numerator": "0 0.0178 0.0177",
+        "denominator": "1 -1.9696 0.9739",
+        "domain": "discrete",
+        "discreteVariable": "z",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "scope-3",
+      "type": "scope",
+      "label": "Scope",
+      "role": "scope-01",
+      "position": {
+        "x": 600,
+        "y": 200
+      },
+      "rotation": 0,
+      "properties": {
+        "channel": "CH-1",
+        "timebase": "1 s/div",
+        "dataType": "f32"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "xy-edge__step-1out-transferFunction-2in",
+      "sourceNodeId": "step-1",
+      "sourcePortId": "out",
+      "targetNodeId": "transferFunction-2",
+      "targetPortId": "in"
+    },
+    {
+      "id": "xy-edge__transferFunction-2out-scope-3in",
+      "sourceNodeId": "transferFunction-2",
+      "sourcePortId": "out",
+      "targetNodeId": "scope-3",
+      "targetPortId": "in"
+    }
+  ],
+  "graphIndex": {
+    "nodesById": {
+      "step-1": {
+        "type": "step",
+        "role": "step-01",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "transferFunction-2": {
+        "type": "transferFunction",
+        "role": "tf-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "scope-3": {
+        "type": "scope",
+        "role": "scope-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": []
+      }
+    },
+    "incomingEdgesByNodeId": {
+      "step-1": [],
+      "transferFunction-2": [
+        "xy-edge__step-1out-transferFunction-2in"
+      ],
+      "scope-3": [
+        "xy-edge__transferFunction-2out-scope-3in"
+      ]
+    },
+    "outgoingEdgesByNodeId": {
+      "step-1": [
+        "xy-edge__step-1out-transferFunction-2in"
+      ],
+      "transferFunction-2": [
+        "xy-edge__transferFunction-2out-scope-3in"
+      ],
+      "scope-3": []
+    }
+  }
+}

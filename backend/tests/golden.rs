@@ -144,11 +144,16 @@ fn golden_second_order_system() {
 //   cargo run --manifest-path backend/Cargo.toml -- \
 //     --emit-trace test-projects/NN-*.f32.csv  test-projects/NN-*.json
 
-const PROJECTS: [&str; 4] = [
+const PROJECTS: [&str; 5] = [
     "01-double-integrator",
     "02-feedback-TF",
     "03-TF-test",
     "04-2nd-order-system",
+    // Plant alone, driven by a step. Exists because the firmware runtime has to
+    // be able to run a *plant* as a plan with no new code - the claim the
+    // two-board HIL loop rests on. Its coefficients are lifted unchanged from
+    // 04 so the two are directly comparable.
+    "05-plant-only",
 ];
 
 #[test]

@@ -21,6 +21,9 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/sys/atomic.h>
+#ifdef CONFIG_RTT_CONSOLE
+#include <SEGGER_RTT.h>
+#endif
 #include <zephyr/sys/printk.h>
 #include <zephyr/timing/timing.h>
 
@@ -59,9 +62,23 @@ static struct ctrl_runtime runtime;
  * interrupt handler of its own (which the control path is better off without).
  */
 #ifndef CTRL_TRACE_TEXT
+#ifdef CONFIG_RTT_CONSOLE
+
+/* On an RTT console there is no UART to write to - the console is a ring buffer
+ * in target RAM that the debug probe reads over SWD - so the frame goes at RTT
+ * directly. It lands in DTCM (CONFIG_SEGGER_RTT_SECTION_DTCM) where it can be
+ * read back with mem8, which is how the H743 is graded.
+ */
+static void trace_sink(void *ctx, const uint8_t *bytes, uint32_t len)
+{
+	ARG_UNUSED(ctx);
+	SEGGER_RTT_Write(0, bytes, len);
+}
+
+#else
 static const struct device *const console_uart = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 
-static void uart_sink(void *ctx, const uint8_t *bytes, uint32_t len)
+static void trace_sink(void *ctx, const uint8_t *bytes, uint32_t len)
 {
 	ARG_UNUSED(ctx);
 
@@ -69,6 +86,7 @@ static void uart_sink(void *ctx, const uint8_t *bytes, uint32_t len)
 		uart_poll_out(console_uart, bytes[i]);
 	}
 }
+#endif /* CONFIG_RTT_CONSOLE */
 #endif
 
 static bool is_in_dtcm(const void *p)
@@ -371,7 +389,7 @@ int main(void)
 			      completed * (1U + plan.signal_count) * 4U +
 			      CTRL_TRACE_TRAILER_LEN));
 
-	ctrl_trace_begin(&writer, uart_sink, NULL, plan.plan_id, (uint16_t)plan.signal_count,
+	ctrl_trace_begin(&writer, trace_sink, NULL, plan.plan_id, (uint16_t)plan.signal_count,
 			 completed);
 	for (uint32_t k = 0; k < completed; k++) {
 		ctrl_trace_row(&writer, trace_times[k], trace_signals[k]);
@@ -512,5 +530,18 @@ int main(void)
 	}
 
 	printk("\ndone\n");
+
+#ifdef CONFIG_RTT_CONSOLE
+	/* Same reason as the bring-up probe: RTT is read over SWD, and letting
+	 * Zephyr idle into WFI takes the H743's core domain off the debug bus,
+	 * after which the board cannot be attached or reflashed without BOOT0 and
+	 * a power cycle. See firmware/BRINGUP.md.
+	 */
+	printk("holding the CPU awake so RTT stays readable\n");
+	while (1) {
+		arch_nop();
+	}
+#endif
+
 	return 0;
 }

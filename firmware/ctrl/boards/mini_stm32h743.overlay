@@ -1,0 +1,19 @@
+/*
+ * Select DTCM on the WeAct MiniSTM32H743.
+ *
+ * stm32h743.dtsi declares `dtcm: memory@20000000` (128 KB) but the board never
+ * selects it, so without this the __dtcm_* linker sections do not exist and
+ * runtime.c's pools have nowhere to go. nucleo_f767zi needs no equivalent: its
+ * board .dts already has `zephyr,dtcm` in the chosen block.
+ *
+ * This duplicates firmware/bringup/boards/mini_stm32h743.overlay on purpose.
+ * Zephyr discovers overlays under <app>/boards/, so each application needs its
+ * own, and the content is a settled board fact rather than something that will
+ * drift. See firmware/BRINGUP.md.
+ */
+
+/ {
+	chosen {
+		zephyr,dtcm = &dtcm;
+	};
+};

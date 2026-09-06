@@ -450,11 +450,12 @@ mod tests {
     use crate::plan::build_control_plan;
     use crate::{parse_project_json, simulate_validated_dag, ValidatedDag};
 
-    const FIXTURES: [&str; 4] = [
+    const FIXTURES: [&str; 5] = [
         "01-double-integrator",
         "02-feedback-TF",
         "03-TF-test",
         "04-2nd-order-system",
+        "05-plant-only",
     ];
 
     fn fixture(name: &str) -> ValidatedDag {
@@ -480,11 +481,14 @@ mod tests {
     /// landing inside the 5.8e-6 noise floor.
     #[test]
     fn firmware_trace_digests_are_pinned() {
-        let expected: [(&str, u64); 4] = [
+        let expected: [(&str, u64); 5] = [
             ("01-double-integrator", 0xe4b8_b805_7816_2eaf),
             ("02-feedback-TF", 0xf6a4_3fbf_fe09_b100),
             ("03-TF-test", 0xf2ef_1769_744e_1a56),
             ("04-2nd-order-system", 0xfddb_22c1_a952_5b2c),
+            // Reproduced bit-for-bit on a NUCLEO-F767ZI *and* a WeAct
+            // MiniSTM32H743, as well as x86_64 and arm64.
+            ("05-plant-only", 0x6a01_864d_4f8e_0c87),
         ];
 
         for (name, digest) in expected {

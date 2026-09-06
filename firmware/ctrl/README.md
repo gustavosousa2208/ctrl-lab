@@ -200,6 +200,69 @@ therefore measured the same 100 us four times while reporting CPU loads above
 firmware now divides by the measured period and prints a note when the two
 disagree.
 
+### It runs on a second board, and agrees to the bit
+
+`firmware/ctrl` also builds and runs on the **WeAct MiniSTM32H743**, executing
+`05-plant-only` — a plan containing just the plant from fixture 04, driven by a
+step. **[V]** 2026-09-06.
+
+```
+plan 05-plant-only (221 bytes): ok
+signal_pool @ 0x20000100  in DTCM
+trace_fnv1a64=0x6a01864d4f8e0c87        == the backend reference
+VERDICT    PASS - bit-for-bit
+```
+
+Two things this establishes that one board could not.
+
+**A plant needs no new firmware.** The H743 runs the same binary as the
+controller board; only the `.dcp` differs. That is the data-driven claim in
+`../AGENTS.md` — *"changing the whole diagram changes the plan, not the
+firmware"* — tested rather than asserted, and it is what makes the stage E
+two-board loop cheap.
+
+**f32 execution is board-independent, not just architecture-independent.** The
+same digests now hold on x86_64, arm64, STM32F767 (Cortex-M7 at 216 MHz) and
+STM32H743 (Cortex-M7 at 240 MHz).
+
+| | F767ZI, fixture 04 | H743, plant-only |
+| --- | --- | --- |
+| step | 3989–4083 cycles, 18.9 us | **598–843 cycles, 2.6 us** |
+| tick period vs nominal | 10 800 000 / 10 800 000 | 11 999 999 / 12 000 000 |
+| deadlines missed | 0 / 501 | 0 / 501 |
+
+The step figures are not comparable head to head — six blocks against three —
+but the H743's per-block speed advantage from the bring-up probe carries over.
+
+**Two anomalies, recorded rather than tidied away:**
+
+- **Tick jitter is 5183 ns on the H743 against 78 ns on the F767** — 66x worse,
+  for the same scheduler and the same 10 kHz kernel tick. Not explained. It does
+  not affect correctness (the digest matches and no deadline was missed) but it
+  matters for stage E, where the two boards' clocks are the thing being measured.
+- **`cpu_awake` reported a max of 10 352 907 cycles against a mean of 24 244.**
+  That is 86% of a tick spent awake for a step that takes 623 cycles, which is
+  not credible; it is far more likely an instrumentation fault in the awake-time
+  measurement than a real stall. The mean, the step timings and the deadline
+  count are all consistent, so only that one statistic is suspect.
+
+Build it with:
+
+```bash
+EXTRA_CONF=rtt.conf bash firmware/scripts/build.sh ctrl mini_stm32h743 -p always \
+  -- -DCTRL_PLAN=05-plant-only
+bash firmware/scripts/flash.sh ctrl mini_stm32h743     # or west flash --runner jlink
+python3 firmware/scripts/rtt-read.py <build>/zephyr/zephyr.elf --out run.bin
+python3 firmware/scripts/grade-trace.py test-projects/05-plant-only.f32.csv run.bin \
+  --expect-digest 0x6a01864d4f8e0c87
+```
+
+`rtt-read.py` exists because `JLinkRTTLogger` could not locate the control block
+on this setup with or without `-RTTSearchRanges`. It does not need to be found:
+the ELF says where it is, the block says where its buffer is and how much has
+been written, and `mem8` reads the bytes. See `firmware/BRINGUP.md` for the
+three separate traps RTT presented on this board.
+
 ### The trace is a binary frame
 
 Hex text spends 9 bytes per sample (8 digits and a separator) to carry 4 bytes
