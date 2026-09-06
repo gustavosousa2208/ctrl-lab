@@ -129,12 +129,19 @@ def main():
         seen = max(0, len(chunks) - 2)
     os.close(fd)
 
-    text = b"".join(chunks).decode("utf-8", errors="replace")
+    raw = b"".join(chunks)
+
+    # --out gets the RAW bytes. The console carries a binary trace frame in the
+    # middle of ordinary text, and decoding it as UTF-8 to write it back out
+    # would corrupt every non-ASCII byte in the payload - which is most of them.
+    # The terminal still gets a lossy text rendering, because that is all a
+    # terminal can show.
+    text = raw.decode("utf-8", errors="replace")
     sys.stdout.write(text)
     if args.out:
-        with open(args.out, "w") as handle:
-            handle.write(text)
-        print(f"\n[captured {len(text)} bytes to {args.out}]", file=sys.stderr)
+        with open(args.out, "wb") as handle:
+            handle.write(raw)
+        print(f"\n[captured {len(raw)} bytes to {args.out}]", file=sys.stderr)
 
     if args.until not in text:
         print(f"\n[warning: never saw `{args.until}` - timed out]", file=sys.stderr)

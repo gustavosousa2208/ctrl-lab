@@ -65,10 +65,8 @@ const char *ctrl_load_result_str(enum ctrl_load_result result)
  * table-free: a plan is a few hundred bytes and this runs once at load, so a
  * 1 KiB table would cost more than it saves.
  */
-uint32_t ctrl_crc32(const uint8_t *bytes, uint32_t len)
+uint32_t ctrl_crc32_update(uint32_t crc, const uint8_t *bytes, uint32_t len)
 {
-	uint32_t crc = 0xffffffffU;
-
 	for (uint32_t i = 0; i < len; i++) {
 		crc ^= bytes[i];
 		for (int bit = 0; bit < 8; bit++) {
@@ -77,7 +75,12 @@ uint32_t ctrl_crc32(const uint8_t *bytes, uint32_t len)
 			crc = (crc >> 1) ^ (0xEDB88320U & mask);
 		}
 	}
-	return ~crc;
+	return crc;
+}
+
+uint32_t ctrl_crc32(const uint8_t *bytes, uint32_t len)
+{
+	return CTRL_CRC32_FINAL(ctrl_crc32_update(CTRL_CRC32_INIT, bytes, len));
 }
 
 uint64_t ctrl_fnv1a64(const uint8_t *bytes, uint32_t len)

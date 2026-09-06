@@ -31,8 +31,10 @@ counted and skipped, and the digest decides the verdict.
 """
 
 import argparse
+import io
 import struct
 import sys
+import zlib
 
 # backend/src/exec.rs: worst f32-vs-f64 divergence across all four fixtures.
 NOISE_FLOOR = 5.8e-6
@@ -40,6 +42,57 @@ NOISE_FLOOR = 5.8e-6
 
 def bits_to_float(token):
     return struct.unpack("<f", struct.pack("<I", int(token, 16)))[0]
+
+
+TRACE_MAGIC = b"DCPT"
+TRACE_HEADER_LEN = 32
+TRACE_FRAME_VERSION = 1
+
+
+def read_binary_frame(raw):
+    """Decode a DCPT trace frame out of a raw capture, or None if absent.
+
+    The frame is located by scanning for its magic and then consuming exactly
+    `payload_len` bytes, so it can sit in the middle of ordinary console text
+    without any escaping. `payload_len` is only trusted after `header_crc32`
+    checks out - a corrupt length is the one field worth validating before it is
+    used to slice.
+
+    See firmware/ctrl/src/trace.h for the layout.
+    """
+    at = raw.find(TRACE_MAGIC)
+    while at >= 0:
+        header = raw[at:at + TRACE_HEADER_LEN]
+        if len(header) < TRACE_HEADER_LEN:
+            return None
+        version, signal_count = struct.unpack_from("<HH", header, 4)
+        step_count, plan_id, payload_len, header_crc = struct.unpack_from("<IQII", header, 8)
+        if version == TRACE_FRAME_VERSION and zlib.crc32(header[:24]) & 0xFFFFFFFF == header_crc:
+            break
+        # A false positive on the magic - the bytes "DCPT" can occur inside a
+        # payload. Keep looking.
+        at = raw.find(TRACE_MAGIC, at + 1)
+    else:
+        return None
+    if at < 0:
+        return None
+
+    body = raw[at + TRACE_HEADER_LEN:]
+    if len(body) < payload_len + 12:
+        return {"error": f"frame truncated: need {payload_len + 12} bytes, have {len(body)}"}
+
+    payload = body[:payload_len]
+    payload_crc, digest = struct.unpack_from("<IQ", body, payload_len)
+    if zlib.crc32(payload) & 0xFFFFFFFF != payload_crc:
+        return {"error": "frame payload CRC mismatch"}
+
+    stride = 1 + signal_count
+    if payload_len != step_count * stride * 4:
+        return {"error": "frame payload_len disagrees with step/signal counts"}
+
+    values = struct.unpack(f"<{step_count * stride}f", payload)
+    rows = [list(values[k * stride:(k + 1) * stride]) for k in range(step_count)]
+    return {"rows": rows, "digest": f"0x{digest:016x}", "plan_id": f"0x{plan_id:016x}"}
 
 
 def read_trace(stream, width):
@@ -88,11 +141,24 @@ def main():
     header, reference = read_reference(args.reference)
     width = len(reference[0])
 
-    with open(args.trace) if args.trace else sys.stdin as stream:
-        trace, digest, damaged = read_trace(stream, width)
+    raw = open(args.trace, "rb").read() if args.trace else sys.stdin.buffer.read()
+
+    # A binary frame if there is one, hex text otherwise. Both harnesses can
+    # emit either, and a capture may contain text around the frame.
+    frame = read_binary_frame(raw)
+    if frame and "error" in frame:
+        sys.exit(f"binary trace frame: {frame['error']}")
+
+    if frame:
+        trace, digest, damaged = frame["rows"], frame["digest"], 0
+        source = "binary frame"
+    else:
+        text = raw.decode("utf-8", errors="replace")
+        trace, digest, damaged = read_trace(io.StringIO(text), width)
+        source = "hex text"
 
     if not trace:
-        sys.exit("no intact trace rows found (expected lines starting with `T,`)")
+        sys.exit("no trace found (looked for a DCPT binary frame and for `T,` hex rows)")
 
     # Match by time, not position: a row lost in transport must not shift every
     # comparison after it by one step.
@@ -111,6 +177,7 @@ def main():
                 worst, worst_at = delta, (step, column)
 
     compared = len(trace) - unmatched
+    print(f"format     {source}")
     print(f"rows       {compared} of {len(reference)} compared", end="")
     if damaged or unmatched:
         print(f"  ({damaged} damaged in transport, {unmatched} unmatched)")

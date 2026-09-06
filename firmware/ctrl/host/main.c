@@ -17,8 +17,10 @@
  * Output is byte-identical in shape to the device's, so one grader reads both.
  */
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "dcp.h"
 #include "runtime.h"
@@ -27,12 +29,29 @@
 static struct ctrl_plan plan;
 static struct ctrl_runtime runtime;
 
+/* Binary frames go to stdout; everything a human reads goes to stderr, so
+ * `ctrl-host ... > trace.bin` is a clean frame and the commentary still shows.
+ */
+static void stdout_sink(void *ctx, const uint8_t *bytes, uint32_t len)
+{
+	(void)ctx;
+	fwrite(bytes, 1, len, stdout);
+}
+
 int main(int argc, char **argv)
 {
-	if (argc != 3) {
-		fprintf(stderr, "usage: %s <plan.dcp> <steps>\n", argv[0]);
+	bool text = false;
+	int arg = 1;
+
+	if (argc > 1 && strcmp(argv[1], "--text") == 0) {
+		text = true;
+		arg = 2;
+	}
+	if (argc - arg != 2) {
+		fprintf(stderr, "usage: %s [--text] <plan.dcp> <steps>\n", argv[0]);
 		return 2;
 	}
+	argv += arg - 1;
 
 	FILE *file = fopen(argv[1], "rb");
 
@@ -60,17 +79,24 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	printf("plan_id=0x%016llx\n", (unsigned long long)plan.plan_id);
-	printf("base_ts_ns=%llu\n", (unsigned long long)plan.base_ts_ns);
-	printf("blocks=%u signals=%u state=%u params=%u\n", plan.n_blocks, plan.signal_count,
-	       plan.state_len, plan.param_count);
-	printf("steps=%ld\n", steps);
+	FILE *notes = text ? stdout : stderr;
+
+	fprintf(notes, "plan_id=0x%016llx\n", (unsigned long long)plan.plan_id);
+	fprintf(notes, "base_ts_ns=%llu\n", (unsigned long long)plan.base_ts_ns);
+	fprintf(notes, "blocks=%u signals=%u state=%u params=%u\n", plan.n_blocks,
+		plan.signal_count, plan.state_len, plan.param_count);
+	fprintf(notes, "steps=%ld\n", steps);
 
 	ctrl_arm(&runtime, &plan);
 
+	struct ctrl_trace_writer writer;
 	struct ctrl_trace_hash hash;
 
 	ctrl_trace_hash_init(&hash);
+	if (!text) {
+		ctrl_trace_begin(&writer, stdout_sink, NULL, plan.plan_id,
+				 (uint16_t)plan.signal_count, (uint32_t)steps);
+	}
 
 	const float *signals = ctrl_signals();
 
@@ -87,16 +113,21 @@ int main(int argc, char **argv)
 			return 1;
 		}
 
-		printf("T,%08x", ctrl_f32_bits(time));
-		ctrl_trace_hash_push(&hash, time);
-
-		for (uint32_t slot = 0; slot < plan.signal_count; slot++) {
-			printf(",%08x", ctrl_f32_bits(signals[slot]));
-			ctrl_trace_hash_push(&hash, signals[slot]);
+		if (text) {
+			printf("T,%08x", ctrl_f32_bits(time));
+			ctrl_trace_hash_push(&hash, time);
+			for (uint32_t slot = 0; slot < plan.signal_count; slot++) {
+				printf(",%08x", ctrl_f32_bits(signals[slot]));
+				ctrl_trace_hash_push(&hash, signals[slot]);
+			}
+			printf("\n");
+		} else {
+			ctrl_trace_row(&writer, time, signals);
 		}
-		printf("\n");
 	}
 
-	printf("trace_fnv1a64=0x%016llx\n", (unsigned long long)ctrl_trace_hash_value(&hash));
+	const uint64_t digest = text ? ctrl_trace_hash_value(&hash) : ctrl_trace_end(&writer);
+
+	fprintf(notes, "trace_fnv1a64=0x%016llx\n", (unsigned long long)digest);
 	return 0;
 }

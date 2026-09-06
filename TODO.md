@@ -23,6 +23,26 @@ is blocked on hardware access. Current state and context:
 - ~~Hardware: pick the board.~~ **Done** — NUCLEO-F767ZI, running the probe. No overlay was needed; the board already chooses DTCM. See [`firmware/BRINGUP.md`](firmware/BRINGUP.md).
 - ~~Firmware: flash `ctrl` and grade the device trace.~~ **Done, on hardware.** All four fixtures return the reference digest bit-for-bit on the NUCLEO-F767ZI. A step costs 13-19 us.
 - ~~Firmware: re-run the cache A/B.~~ **Done.** Caches on vs. off is bit-identical *and* cycle-identical (3989/3997/7782 either way) with ~68 KB of cacheable working set. Closes the item carried since bring-up.
+### Trace link (plan agreed 2026-09-06)
+
+- ~~Step 1: baud sweep.~~ **Done.** 921600 is the default; zero loss at 460800
+  and above, and macOS rejects anything higher on this driver.
+- ~~Step 2: binary framing.~~ **Done.** `DCPT` frame, 2.26x smaller than hex
+  text, self-delimiting, header + payload CRC32. Transport-independent, so it
+  carries unchanged to USB CDC and to the stage E MCU-to-MCU link. Layout in
+  `firmware/ctrl/src/trace.h`.
+- Step 3: **native USB CDC as a second channel.** The board already wires
+  `zephyr_udc0: &usbotg_fs` on PA11/PA12 and lists `usb_device` as supported.
+  Keep `usart3` as the console — no enumeration race for boot messages and
+  panics — and add USB purely as the bulk telemetry path, which is what
+  `firmware/AGENTS.md` already specifies for telemetry.
+- Step 4: **measure the USB ISR cost** before adopting it on a timer-driven
+  loop. A USB stack raises interrupts including SOF at 1 kHz, and one ISR
+  already costs ~3930 cycles. The outlier counter and the `-DCTRL_IRQ_LOCK=y`
+  A/B are the tools for this and both exist.
+
+### Stage D leftovers
+
 - **Firmware: drive the step from a hardware timer.** The last structural piece of stage D. Budget is measured: 3992 cycles (18.5 us) worst-case uninterrupted, plus ~3930 for an ISR intrusion — under 4% of a 1 kHz period.
 - Backend: decide what to stamp into `wcet_estimate_ns`. The number exists now, but it is per-board and per-plan, so this needs a policy (per-kernel cost table summed over a plan, plus margin), not a constant.
 - Validation: document the exact RST equation form the project will use. Note that stage C established a PID needs no new kernel — a discrete PID *is* a second-order discrete transfer function, which the existing kernel already runs.

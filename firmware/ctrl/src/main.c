@@ -19,6 +19,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/drivers/uart.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/timing/timing.h>
 
@@ -48,6 +49,26 @@ static uint32_t step_cycles[CTRL_PLAN_STEPS];
 
 static struct ctrl_plan plan;
 static struct ctrl_runtime runtime;
+
+/* Raw bytes to the console UART.
+ *
+ * printk cannot carry a binary frame - it formats - so the frame goes straight
+ * at the device the console is already using. uart_poll_out is synchronous, so
+ * it stays correctly ordered with the printk lines around it and needs no
+ * interrupt handler of its own (which the control path is better off without).
+ */
+#ifndef CTRL_TRACE_TEXT
+static const struct device *const console_uart = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
+
+static void uart_sink(void *ctx, const uint8_t *bytes, uint32_t len)
+{
+	ARG_UNUSED(ctx);
+
+	for (uint32_t i = 0; i < len; i++) {
+		uart_poll_out(console_uart, bytes[i]);
+	}
+}
+#endif
 
 static bool is_in_dtcm(const void *p)
 {
@@ -164,6 +185,9 @@ int main(void)
 		completed++;
 	}
 
+	uint64_t digest;
+
+#ifdef CTRL_TRACE_TEXT
 	struct ctrl_trace_hash hash;
 
 	ctrl_trace_hash_init(&hash);
@@ -180,8 +204,27 @@ int main(void)
 		printk("\n");
 	}
 	printk("trace_end\n");
-	printk("trace_fnv1a64=0x%08x%08x\n", (uint32_t)(ctrl_trace_hash_value(&hash) >> 32),
-	       (uint32_t)ctrl_trace_hash_value(&hash));
+	digest = ctrl_trace_hash_value(&hash);
+#else
+	struct ctrl_trace_writer writer;
+
+	/* The marker is for a human reading the console. The reader finds the
+	 * frame by its magic and length, not by this line.
+	 */
+	printk("\ntrace_frame steps=%u signals=%u bytes=%u\n", completed, plan.signal_count,
+	       (unsigned int)(CTRL_TRACE_HEADER_LEN +
+			      completed * (1U + plan.signal_count) * 4U +
+			      CTRL_TRACE_TRAILER_LEN));
+
+	ctrl_trace_begin(&writer, uart_sink, NULL, plan.plan_id, (uint16_t)plan.signal_count,
+			 completed);
+	for (uint32_t k = 0; k < completed; k++) {
+		ctrl_trace_row(&writer, trace_times[k], trace_signals[k]);
+	}
+	digest = ctrl_trace_end(&writer);
+	printk("\n");
+#endif
+	printk("trace_fnv1a64=0x%08x%08x\n", (uint32_t)(digest >> 32), (uint32_t)digest);
 
 	/* Step cost. `max` is the number that belongs in wcet_estimate_ns, and the
 	 * spread is the jitter metric the project commits to reporting.

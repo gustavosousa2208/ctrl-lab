@@ -119,6 +119,43 @@ it), counts and skips damaged rows, and lets the digest decide the verdict. That
 is worth keeping now that the link is clean: the next transport is a wire
 between two MCUs, and it will not be.
 
+### The trace is a binary frame
+
+Hex text spends 9 bytes per sample (8 digits and a separator) to carry 4 bytes
+of f32. The trace is now a framed binary payload instead:
+
+| fixture | binary capture | as hex text |
+| --- | --- | --- |
+| `01-double-integrator` | 3 887 B | ~8 700 B |
+| `02-feedback-TF` | 3 479 B | ~7 500 B |
+| `03-TF-test` | 4 688 B | ~11 000 B |
+| `04-2nd-order-system` | **15 086 B** | **34 078 B** |
+
+2.26x less on the wire, and five consecutive device captures came back
+byte-identical in size and all PASS. **[V]**
+
+The layout is documented in [`src/trace.h`](src/trace.h). Three properties
+matter more than the size:
+
+- **Transport-independent.** The same bytes go over the ST-Link UART today, a
+  USB CDC endpoint next, and an MCU-to-MCU wire in stage E. Nothing in the frame
+  knows which.
+- **Self-delimiting.** The reader scans for the `DCPT` magic and then consumes
+  exactly `payload_len` bytes, so a frame can sit in the middle of ordinary
+  console text with no escaping. `payload_len` is validated by `header_crc32`
+  before it is used to slice — a corrupt length is the field a glitch would most
+  like to get wrong.
+- **Checked, in a way the digest cannot be.** The digest proves the *values*
+  were right but cannot distinguish a truncated frame from a complete one. Both
+  failure modes are exercised: flipping a payload byte gives "payload CRC
+  mismatch", cutting the tail gives "frame truncated: need 14040 bytes, have
+  13871". **[V]**
+
+Build `-DCTRL_TRACE_TEXT=y` for the old hex rows, and run the host harness with
+`--text` for the same. The grader reads either and says which it found. Text is
+worth keeping because it is legible in a terminal with no decoder, which is what
+you want when the question is "is the board saying anything at all".
+
 ## The two builds
 
 The same sources under `src/` build twice, which is the point.
@@ -209,13 +246,15 @@ exists. **[V]**
 | `src/dcp.{h,c}` | decode and validate a plan; CRC-32 and FNV-1a64 |
 | `src/kernels.{h,c}` | the 10 kernels and the dispatch table |
 | `src/runtime.{h,c}` | static pools, arming, the two-pass scheduler |
-| `src/trace.{h,c}` | the sample digest, shared by both harnesses |
+| `src/trace.{h,c}` | the binary frame and the sample digest, shared by both harnesses |
 | `src/main.c` | Zephyr harness: DTCM check, self-test, run, report |
 | `host/main.c` | native harness, same output format |
 | `plan_blob.h.in` | CMake embeds the chosen `.dcp` through this |
 | `caches-off.conf` | A/B fragment: same runtime, both L1 caches disabled |
 
 Build options: `-DCTRL_PLAN=<fixture>` picks what to run and grade against;
+`-DCTRL_CONSOLE_BAUD=<rate>` overrides the 921600 default;
+`-DCTRL_TRACE_TEXT=y` emits hex rows instead of a binary frame; and
 `-DCTRL_IRQ_LOCK=y` runs each step inside `irq_lock()`, an attribution tool for
 the timing question above rather than a default.
 

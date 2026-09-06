@@ -85,6 +85,18 @@ target_compile_options(app PRIVATE -ffp-contract=off -fno-fast-math)
 # An attribution tool, not a default. The step is measured to take ~3960 cycles
 # with a single ~3930-cycle outlier per run; locking interrupts says whether
 # that outlier is an ISR landing inside the step or the step itself varying.
+# Emit the trace as hex text instead of a binary frame:
+#   west build ... -- -DCTRL_TRACE_TEXT=y
+#
+# The frame is 2.3x smaller on the wire (14 KB vs 33 KB for a 501-step run) and
+# is the format the next transports will carry. Text stays available because it
+# is readable in a terminal without a decoder, which matters when the question
+# is "is the board saying anything at all".
+if(CTRL_TRACE_TEXT)
+  target_compile_definitions(app PRIVATE CTRL_TRACE_TEXT=1)
+  message(STATUS "ctrl: trace emitted as hex text")
+endif()
+
 if(CTRL_IRQ_LOCK)
   target_compile_definitions(app PRIVATE CTRL_IRQ_LOCK=1)
   message(STATUS "ctrl: control step runs with interrupts locked")

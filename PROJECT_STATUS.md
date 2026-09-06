@@ -234,6 +234,7 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 | Flash it (macOS) | `bash firmware/scripts/flash.sh ctrl` | **[V]** |
 | Read the console (macOS) | `python3 firmware/scripts/console.py --out run.txt` | resets, then reads **[V]** |
 | Grade a device run | `python3 firmware/scripts/grade-trace.py test-projects/04-2nd-order-system.f32.csv run.txt --expect-digest 0xfddb22c1a9525b2c` | **[V]** PASS - bit-for-bit |
+| Host harness, hex text | `./firmware/ctrl/host/ctrl-host --text <plan.dcp> <steps>` | **[V]** |
 | Host harness | `bash firmware/ctrl/host/build.sh` | **[V]** |
 | Grade a trace | `./firmware/ctrl/host/ctrl-host <plan.dcp> <steps> \| python3 firmware/scripts/grade-trace.py <ref.f32.csv>` | **[V]** PASS on all four |
 | Bit-exact digest | `cargo run --manifest-path backend/Cargo.toml -- --trace-hash test-projects/04-2nd-order-system.json` | **[V]** matches the C core |
@@ -254,6 +255,11 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
   - Two earlier attempts failed and are recorded in `firmware/ctrl/README.md`:
     a firmware-side `k_msleep(1)` per row (did nothing, reverted) and host
     `stty clocal -crtscts` (helped materially, kept).
+  - **The trace is also a binary frame now** (`DCPT`, layout in
+    `firmware/ctrl/src/trace.h`), 2.26x smaller than the hex rows it replaces:
+    15 086 bytes for fixture 04 against 34 078. Self-delimiting and CRC-checked,
+    so it carries unchanged to USB CDC and to the stage E MCU-to-MCU link.
+    `-DCTRL_TRACE_TEXT=y` restores hex rows; the grader reads either. **[V]**
   - **The loss figures published earlier today were partly my own measurement
     bug.** `console.py` did not drain the receive buffer before resetting, so it
     was reading a stale trace left over from the flash — which reported captures

@@ -124,4 +124,12 @@ enum ctrl_load_result ctrl_plan_load(struct ctrl_plan *plan, const uint8_t *byte
 uint32_t ctrl_crc32(const uint8_t *bytes, uint32_t len);
 uint64_t ctrl_fnv1a64(const uint8_t *bytes, uint32_t len);
 
+/* Incremental form, for checksumming something larger than memory while it is
+ * being written out. Start from CTRL_CRC32_INIT, feed chunks, finish with
+ * CTRL_CRC32_FINAL. `ctrl_crc32` is exactly these three steps.
+ */
+#define CTRL_CRC32_INIT      0xffffffffU
+#define CTRL_CRC32_FINAL(c)  (~(c))
+uint32_t ctrl_crc32_update(uint32_t crc, const uint8_t *bytes, uint32_t len);
+
 #endif /* CTRL_DCP_H */
