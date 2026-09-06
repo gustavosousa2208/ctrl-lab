@@ -16,7 +16,8 @@ Neither of the first two needs hardware. Current state and context:
 
 - Backend/Firmware: reconcile `firmware/AGENTS.md` with what `plan.rs` actually encodes. The doc prescribes a biquad second-order-section cascade for the transfer-function kernel (f32 robustness); `plan.rs` packs a single discrete state space. Also settle `io_bindings` (always empty) and `wcet_estimate_ns` (hardcoded to 0, which makes the loader's designed WCET rejection check vacuous). **This is the last thing blocking a firmware kernel from being written.**
 - Frontend: run the `frontend/AGENTS.md` manual checklist against the transfer-function `domain` / `discreteVariable` inspector fields (`bfaa9c6`) — committed on a clean build but never exercised in the running app. The only committed change in the project with no verification behind it.
-- Hardware: pick the board (WeAct MiniSTM32H743 vs. a Nucleo with an integrated debugger), then add its overlay and re-verify `firmware/bringup/`.
+- ~~Hardware: pick the board.~~ **Done** — NUCLEO-F767ZI, running the probe. No overlay was needed; the board already chooses DTCM. See [`firmware/BRINGUP.md`](firmware/BRINGUP.md).
+- Firmware: re-run the cache A/B once the runtime has a working set in `sram0`. The probe's "caches cost nothing" result is real but only covers DTCM-resident data, so it does not yet say anything about D-cache.
 - Validation: document the exact RST equation form the project will use. Note that stage C established a PID needs no new kernel — a discrete PID *is* a second-order discrete transfer function, which the existing kernel already runs.
 
 ## Next
@@ -35,21 +36,26 @@ Neither of the first two needs hardware. Current state and context:
 
 ## PoC: first controller on hardware
 
-Staged plan in [`POC-PLAN.md`](POC-PLAN.md) — PID on one STM32 (WeAct
-MiniSTM32H743), plant emulated on a second, compared against the simulator.
+Staged plan in [`POC-PLAN.md`](POC-PLAN.md) — PID on one STM32
+(NUCLEO-F767ZI), plant emulated on a second, compared against the simulator.
 
 - **Stage C is done.** `backend/src/exec.rs` is the f32 reference executor;
   `--emit-plan` / `--emit-trace` / `--dump-plan` are on the CLI; committed
   vectors and their regression tests are in place. Measured f32-vs-f64 bound:
   **5.8e-6**.
-- **Stage D is next**, and needs the boards. Before the scheduler is written,
-  note that the tick is **two passes** (all outputs, then all state updates) —
-  see `firmware/AGENTS.md`.
-- Bring-up is settled and verified: `firmware/bringup/` builds for
-  `mini_stm32h743`, the console works over USB CDC ACM with no configuration,
-  and a four-line overlay puts the signal and state pools in DTCM. Caches are on
-  by default and a caches-off build is verified for the A/B jitter measurement.
-  See `firmware/BRINGUP.md`.
+- **Stage D is in progress.** The board is up; the runtime is not written. Before
+  the scheduler is written, note that the tick is **two passes** (all outputs,
+  then all state updates) — see `firmware/AGENTS.md`.
+- **Bring-up is finished, on hardware.** `firmware/bringup/` runs on
+  `nucleo_f767zi`: the pools are in DTCM (verified at runtime, no overlay
+  required), the console is `usart3` on the ST-Link VCP, the DWT cycle counter
+  runs at 216 MHz, and `fpu_dp=1`. Reference measurement: 63 dependent f32 MACs
+  in 1653–1670 cycles, spread 17. The caches-off A/B is bit-identical. Build,
+  flash and console scripts are in `firmware/scripts/`. See
+  `firmware/BRINGUP.md`.
+- One anomaly is open and documented: the cycle counter reported itself dead on
+  the first flash and has never repeated it. Three causes were tested and
+  rejected. **A stage-D timing of `0` is that bug, not a fast control step.**
 
 ## Before Firmware RST
 

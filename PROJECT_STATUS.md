@@ -4,9 +4,9 @@ The handoff document. Refresh this file rather than starting a new one.
 
 | | |
 | --- | --- |
-| Updated | 2026-09-04 |
-| Branch | `main`, clean, pushed |
-| HEAD | `7585ca9` |
+| Updated | 2026-09-06 |
+| Branch | `main`, clean, **not pushed** — two commits ahead of `origin` |
+| HEAD | `c99f191` |
 | Remote | `origin` = `git@github.com:gustavosousa2208/ctrl-lab.git` |
 | Tests | 57 passing (`bun run backend:test`) |
 | Branches / stashes / tags | none besides `main` |
@@ -34,8 +34,8 @@ traces. Not a Simulink replacement — a focused platform for measuring the gap
 between simulation and embedded execution.
 
 Maturity: **editor and simulator work and are verified against MATLAB. The
-firmware does not exist yet** — only a design and a build-verified bring-up
-probe.
+control runtime does not exist yet** — there is a design, and a bring-up probe
+that now runs on real hardware and has answered what it was written to ask.
 
 ## Layer status
 
@@ -43,21 +43,38 @@ probe.
 | --- | --- |
 | **Frontend** `frontend/` | Working. React Flow canvas in a Tauri v2 shell: block library, project save/open, scope plotting, compile report. No automated tests — see the manual checklist in `frontend/AGENTS.md`. |
 | **Backend** `backend/` | Working. Parse → validate → simulate (f64), plus `plan.rs` (compile to a Deployable Control Plan) and `exec.rs` (f32 reference executor). Verified sample-by-sample against MATLAB. |
-| **Firmware** `firmware/` | Design + a build-verified bring-up probe. **No control runtime yet.** |
+| **Firmware** `firmware/` | Design + a bring-up probe **running on a NUCLEO-F767ZI**. **No control runtime yet.** |
 
 ## The two environments
 
-- **Windows** (`C:\Users\gusta\source\ctrl-lab`) — the repo, editor and UI work.
-- **macOS** (`remote-macos-gusta-mac`, Tailscale `100.70.245.53`) — Zephyr, the
-  SDK, and the boards. Checkout at `~/ctrl-lab`.
+- **Windows** (`C:\Users\gusta\source\ctrl-lab`) — the repo, editor and UI work,
+  **and the board**: the Nucleo's ST-Link enumerates here (`COM3`), and
+  STM32CubeProgrammer is installed.
+- **WSL / Ubuntu 24.04** on the same machine — **where the firmware is built**.
+  Zephyr v4.3.0 at `3568e1b6d5c`, SDK 0.17.4, in `~/zephyrproject`.
+- **macOS** (`remote-macos-gusta-mac`, Tailscale `100.70.245.53`) — a second
+  Zephyr workspace at the same version. Not needed for firmware any more.
+  Checkout at `~/ctrl-lab`.
 
-Everything crosses between them through git, not file sync. The whole stack
-builds on both, verified from a clean clone. **[V]**
+Everything crosses between the machines through git, not file sync. The whole
+stack builds on Windows and macOS, verified from a clean clone. **[V]**
+
+**Windows and WSL do not need git between them.** The firmware source stays on
+the Windows drive and WSL builds it in place over `/mnt/c`; the build tree goes
+on the WSL native filesystem, where it is much faster. Flashing then reaches
+back the other way — Windows reads the hex out of WSL over `\\wsl.localhost`, so
+**no `usbipd` USB forwarding is involved**. `firmware/scripts/` implements all
+of this; see [`firmware/BRINGUP.md`](firmware/BRINGUP.md).
 
 Details that cost time to rediscover are in
 [`firmware/ZEPHYR-WORKSPACE.md`](firmware/ZEPHYR-WORKSPACE.md) — chiefly that
 `west` lives in a venv off the SSH `PATH`, and that zsh aborts an entire command
-when any glob fails to match.
+when any glob fails to match. Two more, for WSL: **`cmake` and `ninja` are in
+the workspace venv**, and **`dtc` is inside the SDK's host tools**. Neither is
+on the default `PATH`.
+
+Both Zephyr workspaces belong to other projects — the Mac's to Atletec EPTS, the
+WSL one to an imxrt1176-evkb bring-up. **Do not run `west update` in either.**
 
 ## Where the PoC stands
 
@@ -68,7 +85,7 @@ attributable to one transition. Full detail in [`POC-PLAN.md`](POC-PLAN.md).
 | --- | --- | --- |
 | A → B | MATLAB → ctrl-lab engine, both f64 | **done**, within 1e-6 |
 | C | the DCP format + f32 | **done**, bound 5.8e-6 |
-| D | C kernels + scheduler, 1 MCU | **next** — needs a board |
+| D | C kernels + scheduler, 1 MCU | **in progress** — board is up, runtime not written |
 | E | inter-MCU transport + delay | not started |
 | F | DAC/ADC, quantization, clock skew | not started |
 
@@ -87,30 +104,41 @@ attributable to one transition. Full detail in [`POC-PLAN.md`](POC-PLAN.md).
 
 ## Hardware
 
-Currently targeted at the **WeAct MiniSTM32H743** (`mini_stm32h743`), and
-`firmware/bringup/` builds for it. **[V]**
+**Settled: the NUCLEO-F767ZI** (`nucleo_f767zi`), on the desk and running.
+STM32F767ZI, Cortex-M7 at 216 MHz, 2 MB flash, 384 KB SRAM + 128 KB DTCM. The
+WeAct MiniSTM32H743 is retired but its notes are kept. **[V]**
 
-**This is likely to change.** A Nucleo with an integrated debugger was being
-fetched as of 2026-09-04. If it is a **NUCLEO-H743ZI**, switch to it: same SoC so
-every stage-C artifact carries over untouched, plus onboard ST-Link, a real UART
-console on `usart3`, and `adc1`/`adc3`/`dac1`/PWM already enabled in its
-devicetree — which is most of stage F's overlay work already done. A different
-Nucleo family needs the FPU and cache assumptions re-checked. **[I]**
+The switch cost almost nothing — the probe built for the new board unmodified
+except for comments — and the Nucleo is the better target on every axis that
+matters here. Full detail in [`firmware/BRINGUP.md`](firmware/BRINGUP.md).
 
-What bring-up established for the WeAct board, in
-[`firmware/BRINGUP.md`](firmware/BRINGUP.md) — mostly still relevant whichever
-H743 board wins:
+Established **on hardware**, not by building:
 
-- Console works with no configuration (USB CDC ACM on the WeAct; `usart3` on the
-  Nucleo).
-- **DTCM already exists**: 128 KB at `0x20000000`, inherited from
-  `stm32h742.dtsi`. A four-line overlay choosing `zephyr,dtcm` places the signal
-  and state pools there. Verified by `nm`. **Fails silently without the
-  overlay** — the data falls back to SRAM and the build still passes, so check
-  the linker's DTCM line.
-- **Caches are on by default** and are the determinism hazard on Cortex-M7. The
-  caches-off variant is verified to build, so the A/B jitter measurement is a
-  two-line `prj.conf` change.
+- **The pools are in DTCM**, at `0x20000000` and `0x20000100`, and **no overlay
+  is needed** — `nucleo_f767zi.dts` already has `zephyr,dtcm = &dtcm` in its
+  chosen block. The probe now checks this at runtime against the devicetree and
+  prints a per-pool verdict, so the old silent fallback to SRAM cannot pass
+  unnoticed. **[V]**
+- **The DWT cycle counter runs** at the full 216 MHz, so a control step can be
+  timed. **[V]**
+- **f64 is hardware**, `fpu_dp=1`. Same as the H743. **[V]**
+- **The console is `usart3` on the ST-Link VCP** — a real UART, so no USB stack
+  on the control path and nothing lost before enumeration. **[V]**
+- **`adc1` (PA0), `dac1` (PA4) and `tim1_ch3` (PE13) are already enabled**, which
+  is most of stage F's devicetree work. **[V]**
+
+The reference measurement, reproducible to the cycle across resets: 63 dependent
+f32 MACs run in **1653–1670 cycles, spread 17 (~1%)**. At 1 kHz the budget is
+216 000 cycles.
+
+**The caches turned out to cost nothing** — the `ICACHE=n`/`DCACHE=n` variant is
+bit-identical. That contradicts the H743 analysis, which called caches the main
+determinism hazard, and the reason is structural: the hot pools are in DTCM
+(never cached), and `CONFIG_STM32_FLASH_PREFETCH=y` means the F7's ART
+accelerator covers instruction fetch independently of L1. **This result does not
+transfer to the control runtime** — the probe never touches cacheable memory, so
+it says nothing about D-cache once the trace buffer lives in `sram0`. Re-run the
+A/B then. **[V]** for the measurement, **[I]** for the explanation.
 
 ## Verified commands
 
@@ -121,7 +149,9 @@ H743 board wins:
 | Compile a plan | `cargo run --manifest-path backend/Cargo.toml -- --emit-plan out.dcp test-projects/04-2nd-order-system.json` | 355 bytes **[V]** |
 | Inspect a plan | `… -- --dump-plan out.dcp` | **[V]** |
 | f32 reference trace | `… -- --emit-trace out.csv <project.json>` | **[V]** |
-| Firmware probe | see [`firmware/BRINGUP.md`](firmware/BRINGUP.md) | builds **[V]** |
+| Build firmware (WSL) | `bash firmware/scripts/build.sh bringup nucleo_f767zi -p always` | **[V]** |
+| Flash it (Windows) | `firmware\scripts\flash.ps1` | **[V]** |
+| Read the console (Windows) | `firmware\scripts\console.ps1` | resets, then reads **[V]** |
 | Desktop app | `bun run tauri:dev` | compiles on both platforms; **not run in a GUI session** **[?]** |
 
 ## Loose ends
@@ -142,10 +172,20 @@ H743 board wins:
   EPTS) carrying 10 uncommitted patches in its `zephyr` tree. A snapshot is saved
   outside the tree at `~/zephyrproject/.local-patches/`. **Do not run
   `west update` there** for ctrl-lab reasons.
+- **The WSL Zephyr workspace is someone else's too** — an imxrt1176-evkb
+  bring-up, per its `.west/config` manifest. Same rule: **no `west update`.** It
+  carries two uncommitted patches, both checked and harmless to us; the
+  `arch/arm/core/cortex_m/prep_c.c` one is in every Cortex-M build path but is
+  entirely inside `#ifdef CONFIG_MCUBOOT`. **[V]**
+- **The cycle counter reported itself dead once, on the very first flash, and
+  has never done it again.** Three hypotheses were tested on hardware and
+  rejected; all are written up in `firmware/BRINGUP.md` so the time is not spent
+  twice. The detection is now robust, but if a stage-D timing ever reads `0`,
+  that is this, and it is a broken measurement rather than a fast step. **[?]**
 
 ## Open decisions
 
-- **Which board.** See Hardware above. Blocks stage D.
+- ~~Which board.~~ **Settled** — NUCLEO-F767ZI, running. See Hardware above.
 - **The DCP is a draft, not a frozen wire format.** Nothing has decoded a plan
   except its own round-trip test. `io_bindings` is always empty and
   `wcet_estimate_ns` is hardcoded to `0`, which makes the loader's designed WCET
@@ -163,24 +203,29 @@ H743 board wins:
 
 ## Next actions
 
-Ordered. The first two need no hardware.
+Ordered. Bring-up is finished, so the board no longer blocks anything — the
+blocker is now a decision, not hardware.
 
 1. **Reconcile `firmware/AGENTS.md` with `plan.rs`** — state space or biquad SOS,
-   and settle `io_bindings` and `wcet_estimate_ns`. This is the last thing
-   blocking a firmware kernel from being written.
-2. **Run the `frontend/AGENTS.md` manual checklist** against `bfaa9c6` in the
-   desktop app.
-3. **Pick the board**, then add its overlay and re-verify `firmware/bringup/`.
-4. **Stage D**: flash the probe, read the cache/jitter numbers, then write the
-   plan loader, kernel dispatch table and two-pass scheduler. Grade against
-   `test-projects/NN-*.f32.csv`; the bar is bit-for-bit.
+   and settle `io_bindings` and `wcet_estimate_ns`. **This is the one thing
+   standing between here and a control runtime**, and it needs no hardware.
+2. **Stage D proper**: write the plan loader, the kernel dispatch table and the
+   two-pass scheduler. Grade the device trace against
+   `test-projects/NN-*.f32.csv`; the bar is bit-for-bit, and the f32 noise floor
+   is 5.8e-6, so anything above that is a bug rather than precision loss.
+   Remember the tick is **two passes**, not one — fusing them cost 1.2e-2 on
+   fixture 04.
+3. **Re-run the cache A/B once the runtime touches `sram0`.** The probe's
+   "caches are free" result is real but only covers a DTCM-resident working set.
+4. **Run the `frontend/AGENTS.md` manual checklist** against `bfaa9c6` in the
+   desktop app. Still the only committed change with no verification behind it.
 5. Later, from `TODO.md`: frontend `graphIndex` consistency checks, golden
    coverage of internal controller states, and the step/ramp/disturbance/noise
    cases.
 
 ## History
 
-Two sessions, 2026-09-03 and 2026-09-04, from a project untouched since
+Three sessions, 2026-09-03 to 2026-09-06, from a project untouched since
 2026-07-24.
 
 **Recovery** (`37a9345`, `b449669`). The project was found with uncommitted work
@@ -207,3 +252,26 @@ Verified a Zephyr build for the board, normalized line endings, and fixed
 builds on macOS — and that the f32 vectors generated on Windows/x86_64 reproduce
 bit-for-bit on macOS/arm64, an independent check on the determinism the project
 depends on.
+
+**First hardware** (`1fd6afb`, `c99f191`). The board arrived and was a
+NUCLEO-F767ZI, so the PoC moved off the WeAct H743 — cheaply, since the probe
+built for it unmodified except for comments, and the Nucleo needs no DTCM
+overlay at all. Built it in WSL, which already had a Zephyr workspace at the
+same commit and SDK as the Mac, and flashed from Windows by reading the hex out
+of WSL over a UNC path rather than forwarding USB with `usbipd`.
+
+Then actually ran it, which is the part that mattered. DTCM placement went from
+a linker claim to a runtime check; the cycle counter came up at 216 MHz; and the
+cache A/B — expected, on the H743 analysis, to be the headline determinism
+hazard — came back bit-identical, because the hot pools are in DTCM and the F7's
+ART accelerator makes L1 redundant for a tight loop.
+
+Two corrections came out of it, both of the same kind. The commit before had
+claimed f64 was soft-emulated on the F7, reading `stm32f7x/Kconfig` against
+`stm32h7x/Kconfig`; the symbol is actually supplied per die through an `rsource`
+glob, and the board prints `fpu_dp=1`. And a first-flash report of a dead cycle
+counter was attributed to a Cortex-M7 LAR unlock, which hardware then showed had
+never been locked. Three hypotheses about that anomaly were tested and rejected;
+it has not reproduced, and it is documented as unexplained rather than tidied
+away. The lesson written into `BRINGUP.md` covers all three misreads across the
+project: **read the generated `zephyr/.config`, not the Kconfig sources.**
