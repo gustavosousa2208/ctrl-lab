@@ -264,6 +264,10 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 
 ## Loose ends
 
+Tracked as `ctrl-lab-5yl`; kept here in full because the detail is what costs
+time to rediscover.
+
+
 - ~~**The board's console drops bytes.**~~ **Fixed by raising the console to
   921600 baud**, which is now the default in `firmware/ctrl` and in both console
   scripts. Zero rows lost or damaged across nine captures at 460800 and 921600,
@@ -311,7 +315,8 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 - **`Open.ps1` is untracked.** Personal launcher, redundant with
   `bun run tauri:dev`. Commit it or delete it; nothing depends on it.
 - **`frontend/PLAN.md`** is a scratch checklist with all items done. Superseded
-  by `TODO.md`, kept because it documents a frontend working convention.
+  by the Beads backlog, kept because it documents a frontend working
+  convention. Tracked as `ctrl-lab-5yl`.
 - **The Zephyr workspace on the Mac is shared work infrastructure** (Atletec
   EPTS) carrying 10 uncommitted patches in its `zephyr` tree. A snapshot is saved
   outside the tree at `~/zephyrproject/.local-patches/`. **Do not run
@@ -353,7 +358,7 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
   and by order 6 it diverges outright. The SOS cascade is the documented path
   when order > 2 is genuinely needed — as a *new* `KernelId`, never by raising
   the constant. See `backend/AGENTS.md`, "Transfer function order limit". **[V]**
-- **RST controller form is undecided.** Long-standing `TODO.md` item. Note that
+- **RST controller form is undecided.** Long-standing item, now `ctrl-lab-1dq`. Note that
   stage C established a PID needs no new kernel — a discrete PID *is* a
   second-order discrete transfer function, which the existing kernel runs.
 - **`compile_project_report` requires a dev checkout**: it shells out to
@@ -362,33 +367,20 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 
 ## Next actions
 
-Ordered. Stage D is closed and the board is on the Mac, so nothing here is
-blocked on hardware access or on a machine switch.
+**Tracked in Beads, not here.** `bd ready` is the list; this file is for what is
+*true*, not for what is *next*. See [`TODO.md`](TODO.md) for why the split
+exists.
 
-1. ~~Drive the step from a hardware timer.~~ **Done and measured.** The step
-   runs on the plan's own `base_ts_ns` in a cooperative thread woken by the
-   timer ISR. On fixture 04's 50 ms tick: **78 ns of jitter peak-to-peak, 0.11%
-   CPU, 0 deadlines missed of 501**, trace still bit-for-bit. The design tops
-   out near **16-20 kHz**, limited by ~8300 cycles of scheduling overhead per
-   tick rather than by the 18.9 us step. Full tables in
-   [`firmware/ctrl/README.md`](firmware/ctrl/README.md). **[V]**
-2. **Decide what the backend stamps into `wcet_estimate_ns`.** The number now
-   exists but it is per-board and per-plan, so this needs a policy — probably a
-   measured per-kernel cost table summed over a plan's blocks, with a margin.
-   Until then the loader's WCET rejection is written but vacuous.
-3. **Consider running the step in the timer ISR.** Of 12 343 awake cycles per
-   tick only 4081 are the step; the rest is timer ISR, semaphore and two context
-   switches. Reclaiming it needs care — FP in an ISR is only safe with
-   `CONFIG_FPU_SHARING`, which is already on — and it is what would move the
-   ceiling above 20 kHz. Not needed at 1 kHz, where load is 5.7%.
-4. **Stage E**: inter-MCU transport and `io_bindings`. The plan is currently
-   linked into the firmware; receiving one over a wire is the next unknown, and
-   `io_bind[]` is what a source/sink block needs in order to reach a pin.
-5. **Run the `frontend/AGENTS.md` manual checklist** against `bfaa9c6`. Still
-   the only committed change in the project with no verification behind it, and
-   the Mac has a GUI.
-6. Loose ends worth an hour: the duplicate `~/ctrl-lab` checkout and its stale
-   Vite server, and the `origin` remote question. Then the `TODO.md` backlog.
+```bash
+bd ready      # what can be worked on now
+bd blocked    # and what cannot, with the reason
+```
+
+Where things stood at the last update, as orientation rather than as a queue:
+stage D is closed, so nothing is waiting on hardware access. The nearest work is
+stamping `wcet_estimate_ns` now that a real number exists (`ctrl-lab-2my`) and
+stage E transport (`ctrl-lab-ri0`), which is the last thing between this project
+and a controller that receives a plan over a wire.
 
 ## History
 

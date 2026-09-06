@@ -5,7 +5,7 @@ on an STM32, closing a loop around a second STM32 emulating the plant — with t
 resulting trajectory compared against the simulator and the error *attributed*
 rather than hand-waved.
 
-This is the plan for `TODO.md`'s "Before Firmware RST" and "Hardware Validation"
+This is the plan for the "Before Firmware RST" and "Hardware Validation" work
 sections. Read [`PROJECT_STATUS.md`](PROJECT_STATUS.md) first if you are cold.
 
 ## The method: one unknown at a time
@@ -127,7 +127,7 @@ fixtures:
 | 03-TF-test | 1.30e-7 | `sum-3` |
 | 04-2nd-order-system | 5.76e-6 | `transferFunction-9` |
 
-**Bound: 5.8e-6.** That closes `TODO.md`'s long-standing "numeric robustness
+**Bound: 5.8e-6.** That closes the long-standing "numeric robustness
 checks for f32 execution versus MATLAB double" item. Anything on hardware that
 exceeds it is a bug, not precision loss.
 
@@ -224,7 +224,7 @@ it explicitly:
   kernel. Now the simulation models the physical loop and the comparison is
   meaningful.
 
-`TODO.md` already lists "one-sample delay mismatch" as a wanted test case. This
+"One-sample delay mismatch" is a wanted test case (`ctrl-lab-6l8`). This
 is that test case, arriving as physical reality rather than as a unit test.
 
 ### Splitting the diagram

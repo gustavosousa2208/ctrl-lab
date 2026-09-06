@@ -33,7 +33,7 @@ stand right now.
 AGENTS.md            project philosophy and architectural boundaries
 PROJECT_STATUS.md    START HERE - current state, loose ends, next actions
 POC-PLAN.md          staged route to running a controller on real hardware
-TODO.md              prioritized work queue
+TODO.md              pointer at the Beads backlog (`bd ready`)
 backend/             Rust: parse -> validate -> simulate -> compile a control plan
   src/plan.rs          the backend -> firmware wire format (DCP)
   src/exec.rs          f32 reference executor; the firmware's executable spec
