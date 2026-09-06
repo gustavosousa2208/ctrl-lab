@@ -82,7 +82,9 @@ int main(void)
 	printk("board " CONFIG_BOARD_TARGET ", SoC " CONFIG_SOC "\n");
 	printk("icache=%d dcache=%d fpu_dp=%d\n", IS_ENABLED(CONFIG_ICACHE),
 	       IS_ENABLED(CONFIG_DCACHE), IS_ENABLED(CONFIG_CPU_HAS_FPU_DOUBLE_PRECISION));
-	printk("core %u Hz\n", sys_clock_hw_cycles_per_sec());
+	printk("core %u Hz, kernel ticks %u Hz, irq_lock=%d\n",
+	       sys_clock_hw_cycles_per_sec(), CONFIG_SYS_CLOCK_TICKS_PER_SEC,
+	       IS_ENABLED(CTRL_IRQ_LOCK));
 
 	printk("signal_pool @ %p  %s\n", ctrl_signal_pool_addr(),
 	       is_in_dtcm(ctrl_signal_pool_addr()) ? "in DTCM" : "*** NOT IN DTCM ***");
@@ -138,9 +140,15 @@ int main(void)
 		trace_times[k] = ctrl_time(&runtime);
 
 		/* Not const: timing_cycles_get() takes non-const pointers. */
+#ifdef CTRL_IRQ_LOCK
+		const unsigned int key = irq_lock();
+#endif
 		timing_t start = timing_counter_get();
 		const bool ok = ctrl_step(&runtime);
 		timing_t end = timing_counter_get();
+#ifdef CTRL_IRQ_LOCK
+		irq_unlock(key);
+#endif
 
 		step_cycles[k] = (uint32_t)timing_cycles_get(&start, &end);
 
@@ -188,12 +196,43 @@ int main(void)
 		total += step_cycles[k];
 	}
 
+	/* The first step is reported separately because it is not the same
+	 * measurement as the rest: it runs with a cold I-cache and an untrained
+	 * branch predictor, and it is the only step whose state pool has never been
+	 * written. Folding it into `max` would report a startup cost as if it were
+	 * the worst-case control step, which is exactly the number that later goes
+	 * into wcet_estimate_ns.
+	 */
+	uint32_t steady_worst = 0;
+	uint32_t worst_at = 0;
+	uint32_t outliers = 0;
+
+	for (uint32_t k = 1; k < completed; k++) {
+		if (step_cycles[k] > steady_worst) {
+			steady_worst = step_cycles[k];
+			worst_at = k;
+		}
+		/* Anything half again as long as the fastest step did not simply run
+		 * slowly - something interrupted it. Counting these separates "the
+		 * kernel tick landed inside a step" from "the step itself is variable",
+		 * which need completely different fixes.
+		 */
+		if (step_cycles[k] > best + best / 2U) {
+			outliers++;
+		}
+	}
+
 	if (completed > 0) {
 		const uint32_t hz = sys_clock_hw_cycles_per_sec();
 		const uint32_t mean = (uint32_t)(total / completed);
 
 		printk("\nstep_cycles min=%u mean=%u max=%u spread=%u\n", best, mean, worst,
 		       worst - best);
+		printk("first_step  %u cycles; steady max=%u at step %u, jitter=%u (%u%%)\n",
+		       step_cycles[0], steady_worst, worst_at, steady_worst - best,
+		       steady_worst ? (steady_worst - best) * 100U / steady_worst : 0U);
+		printk("outliers    %u of %u steps took >1.5x the fastest step\n", outliers,
+		       completed - 1);
 		printk("step_ns     min=%u mean=%u max=%u\n",
 		       (uint32_t)((uint64_t)best * 1000000000U / hz),
 		       (uint32_t)((uint64_t)mean * 1000000000U / hz),

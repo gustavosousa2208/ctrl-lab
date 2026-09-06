@@ -53,3 +53,14 @@ target_sources(app PRIVATE
 # stays INSIDE the project's 5.8e-6 noise floor. A tolerance-based grading would
 # have passed it. Rust does not contract; neither may we.
 target_compile_options(app PRIVATE -ffp-contract=off -fno-fast-math)
+
+# Run each control step with interrupts locked:
+#   west build ... -- -DCTRL_IRQ_LOCK=y
+#
+# An attribution tool, not a default. The step is measured to take ~3960 cycles
+# with a single ~3930-cycle outlier per run; locking interrupts says whether
+# that outlier is an ISR landing inside the step or the step itself varying.
+if(CTRL_IRQ_LOCK)
+  target_compile_definitions(app PRIVATE CTRL_IRQ_LOCK=1)
+  message(STATUS "ctrl: control step runs with interrupts locked")
+endif()

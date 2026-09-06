@@ -15,16 +15,17 @@ adding anything.
 | --- | --- |
 | **Frontend** (`frontend/`) | Working. React + React Flow canvas editor in a Tauri v2 desktop shell: block library, project save/open, scope plotting, compile report. |
 | **Backend** (`backend/`) | Working. Rust crate `ctrl-backend`: project parsing, validation, and a deterministic fixed-step simulator, verified sample-by-sample against MATLAB references. |
-| **Firmware** (`firmware/`) | **A bring-up probe running on real hardware, and a control runtime that is written but not yet flashed.** `firmware/bringup/` runs on a **NUCLEO-F767ZI** and has settled the DTCM, console, cycle-counter and cache questions. `firmware/ctrl/` is the plan loader, two-pass scheduler and kernel library: it reproduces the f32 reference **bit-for-bit** on every fixture and builds warning-free for the board. |
+| **Firmware** (`firmware/`) | **Working on real hardware.** `firmware/ctrl/` — the plan loader, two-pass scheduler and kernel library — runs on a **NUCLEO-F767ZI** and reproduces the f32 reference **bit-for-bit** on every fixture, at 13-19 us per control step. `firmware/bringup/` is the probe that settled the DTCM, console and cycle-counter questions. No hardware timer or I/O yet. |
 
-Nothing has run a controller on the board yet, but the gap is now one flash
-wide. The backend→firmware wire format (the "Deployable Control Plan") is
-implemented, and the firmware that executes it is written and verified: the same
-C sources build for the NUCLEO-F767ZI and natively, and the native build agrees
-with the `f32` reference executor bit-for-bit on all four fixtures. See
-[`POC-PLAN.md`](POC-PLAN.md) for the staged route, `firmware/ctrl/README.md` for
-what the runtime does and does not do, and
-[`PROJECT_STATUS.md`](PROJECT_STATUS.md) for where things stand right now.
+**The chain works end to end.** A diagram simulates on the PC, compiles to a
+Deployable Control Plan, and that plan runs on a NUCLEO-F767ZI producing a trace
+identical to the simulator's `f32` reference — bit for bit, on all four
+fixtures, verified on the board. What is still missing is not correctness but a
+control *loop*: no hardware timer, no I/O, no transport. See
+[`POC-PLAN.md`](POC-PLAN.md) for the staged route,
+[`firmware/ctrl/README.md`](firmware/ctrl/README.md) for what the runtime does
+and does not do, and [`PROJECT_STATUS.md`](PROJECT_STATUS.md) for where things
+stand right now.
 
 ## Layout
 
@@ -44,9 +45,9 @@ firmware/            a bring-up probe on hardware, and the control runtime
   ZEPHYR-WORKSPACE.md  the Mac build environment and its local patches
   bringup/             minimal Zephyr app; runs on a NUCLEO-F767ZI
   ctrl/                the control runtime: loader, scheduler, kernels
-    README.md            what it does, how to grade it, and the FMA trap
+    README.md            what it does, what the board measured, and the FMA trap
     host/                the same sources built natively, for grading off-target
-  scripts/             build (WSL/macOS), flash and console (Windows), trace grading
+  scripts/             build, flash, console and trace grading (macOS and Windows)
 test-projects/       .json fixtures, .m MATLAB references, and the golden traces:
                        NN-*.ref.csv   MATLAB f64 reference
                        NN-*.plan.dcp  compiled plan, the exact bytes the MCU loads

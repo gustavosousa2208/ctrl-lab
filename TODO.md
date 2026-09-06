@@ -11,8 +11,9 @@
 
 ## Now
 
-The runtime is written and correct off-target, so the board is the blocker
-again. Current state and context: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+Stage D is closed: the runtime runs on the board and is bit-exact. Nothing below
+is blocked on hardware access. Current state and context:
+[`PROJECT_STATUS.md`](PROJECT_STATUS.md).
 
 - ~~Backend/Firmware: reconcile `firmware/AGENTS.md` with what `plan.rs` actually encodes.~~ **Done.** The packed discrete state space wins over the biquad SOS cascade, **capped at order 2**. The cap was measured, not chosen: at order 3 a clustered-pole filter in f32 is already ~100× past the 5.8e-6 noise floor, and by order 6 it diverges outright. Both parsers now reject order > 2 — previously the discrete path had no check at all while the continuous path capped at 2, so a z-domain order 8 ran and produced nonsense. If order > 2 is ever needed, add the SOS cascade as a **new `KernelId`**; do not raise the constant. See `backend/AGENTS.md`, "Transfer function order limit".
 - ~~Backend: settle `io_bindings` and `wcet_estimate_ns` before a firmware kernel can be written.~~ **The premise was wrong.** The kernels were written without either, and `POC-PLAN.md` had it right all along: `io_bind[]` blocks **stage E**, and `wcet_estimate_ns` is chicken-and-egg — hardware measures it, the backend then stamps it. Both are still open, just not here:
@@ -20,9 +21,10 @@ again. Current state and context: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
   - `wcet_estimate_ns` is hardcoded to 0, so the loader's WCET rejection check is written but vacuous. Stamp it from the `step_ns max` the device prints.
 - Frontend: run the `frontend/AGENTS.md` manual checklist against the transfer-function `domain` / `discreteVariable` inspector fields (`bfaa9c6`) — committed on a clean build but never exercised in the running app. The only committed change in the project with no verification behind it.
 - ~~Hardware: pick the board.~~ **Done** — NUCLEO-F767ZI, running the probe. No overlay was needed; the board already chooses DTCM. See [`firmware/BRINGUP.md`](firmware/BRINGUP.md).
-- Firmware: **flash `ctrl` and grade the device trace.** Everything else is done — the runtime is bit-exact off-target, builds warning-free, and `flash.ps1 -App ctrl` needs no edit. The bar is the digest (`0xfddb22c1a9525b2c` for fixture 04), not the tolerance. Needs the Windows machine.
-- Firmware: re-run the cache A/B — `caches-off.conf` now exists for `ctrl`, whose ~68 KB trace buffer is the first cacheable working set in the project. The probe's "caches cost nothing" result only ever covered DTCM. The digest must be identical either way; only timing may move.
-- Firmware: drive the step from a hardware timer. It currently runs steps back to back, which is right for stage D's question but not a control loop.
+- ~~Firmware: flash `ctrl` and grade the device trace.~~ **Done, on hardware.** All four fixtures return the reference digest bit-for-bit on the NUCLEO-F767ZI. A step costs 13-19 us.
+- ~~Firmware: re-run the cache A/B.~~ **Done.** Caches on vs. off is bit-identical *and* cycle-identical (3989/3997/7782 either way) with ~68 KB of cacheable working set. Closes the item carried since bring-up.
+- **Firmware: drive the step from a hardware timer.** The last structural piece of stage D. Budget is measured: 3992 cycles (18.5 us) worst-case uninterrupted, plus ~3930 for an ISR intrusion — under 4% of a 1 kHz period.
+- Backend: decide what to stamp into `wcet_estimate_ns`. The number exists now, but it is per-board and per-plan, so this needs a policy (per-kernel cost table summed over a plan, plus margin), not a constant.
 - Validation: document the exact RST equation form the project will use. Note that stage C established a PID needs no new kernel — a discrete PID *is* a second-order discrete transfer function, which the existing kernel already runs.
 
 ## Next
@@ -48,12 +50,20 @@ Staged plan in [`POC-PLAN.md`](POC-PLAN.md) — PID on one STM32
   `--emit-plan` / `--emit-trace` / `--dump-plan` are on the CLI; committed
   vectors and their regression tests are in place. Measured f32-vs-f64 bound:
   **5.8e-6**.
-- **Stage D is written and verified off-target.** `firmware/ctrl/` is the plan
-  loader, the two-pass scheduler and all ten kernels; it reproduces `exec.rs`
-  **bit-for-bit** on all four fixtures and builds warning-free for the board.
-  What remains is a flash and a device trace. The same sources also build
-  natively (`firmware/ctrl/host/`), which is how the numbers were verified
-  without hardware. See [`firmware/ctrl/README.md`](firmware/ctrl/README.md).
+- **Stage D is done, on hardware.** `firmware/ctrl/` is the plan loader, the
+  two-pass scheduler and all ten kernels. All four fixtures run on the
+  NUCLEO-F767ZI and return the reference digest **bit-for-bit**; a control step
+  costs 13-19 us. The same sources also build natively
+  (`firmware/ctrl/host/`), which is how a numerical bug gets caught before a
+  flash. See [`firmware/ctrl/README.md`](firmware/ctrl/README.md).
+- **The one timing outlier is an interrupt**, proven with an `irq_lock` build:
+  1 step in 500 costs ~3930 extra cycles. Worst uninterrupted step is 3992.
+- **Caches cost nothing**, now measured with a cacheable working set rather than
+  only DTCM.
+- **The console drops bytes** (0-9 damaged and up to 22 missing per 501 rows),
+  so `grade-trace.py` matches by time rather than position and the on-device
+  digest decides the verdict. Not a firmware fault; the digest was right on
+  every run.
 - **`-ffp-contract=off` is load-bearing.** Compiler FMA contraction changes the
   trace digest on three of four fixtures while staying *inside* the 5.8e-6
   tolerance — a wrong answer a tolerance check passes. Both firmware builds set

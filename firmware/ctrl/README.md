@@ -13,10 +13,87 @@ This file is about what exists and how to run it.
 | | |
 | --- | --- |
 | Loader, scheduler, all 10 kernels | written |
-| Bit-exact vs. the f32 reference | **verified, all four fixtures** — off-target |
+| Bit-exact vs. the f32 reference | **verified on hardware, all four fixtures** |
 | Built for `nucleo_f767zi` | **[V]** warning-free, on macOS and WSL |
-| Run on the board | **not yet** — needs a flash from Windows |
+| Run on the board | **[V]** NUCLEO-F767ZI, 2026-09-06 |
 | Driven by a hardware timer | no. Steps run back to back; see below |
+
+## What the board says
+
+All four fixtures load, run, and produce a trace whose digest equals the
+reference executor's, **bit for bit**. Measured 2026-09-06 on a NUCLEO-F767ZI
+(ST-LINK SN `066BFF485753667187244749`), flashed and read from macOS. **[V]**
+
+| fixture | steps | verdict | min | mean | max | ISR outliers |
+| --- | --- | --- | --- | --- | --- | --- |
+| `01-double-integrator` | 101 | bit-for-bit | 3108 | 3110 | 3341 | 0 / 100 |
+| `02-feedback-TF` | 101 | bit-for-bit | 2736 | 2739 | 3080 | 0 / 100 |
+| `03-TF-test` | 101 | bit-for-bit | 3824 | 3835 | 4161 | 0 / 100 |
+| `04-2nd-order-system` | 501 | bit-for-bit | 3989 | 3997 | **7782** | 1 / 500 |
+
+Cycles at 216 MHz, so a step is **13-19 us**. The pools land in DTCM at
+`0x20000000` and `0x20000100`, exactly as the bring-up probe predicted; the
+trace buffer lands at `0x20021bd4`, in cacheable SRAM, on purpose.
+
+### The one big outlier is an interrupt, and that is now proven
+
+Fixture 04's `max` is nearly double its mean. It is reproducible to the cycle
+across resets — always step 373, always 7882 — which rules out noise. Building
+with `-DCTRL_IRQ_LOCK=y`, which runs each step inside `irq_lock()`, settles it:
+
+| | interrupts on | interrupts locked |
+| --- | --- | --- |
+| min / mean | 3953 / 3961 | 3649 / 3652 |
+| max | **7882** | **3992** |
+| spread | 3929 | 343 |
+| steps > 1.5x fastest | 1 of 500 | **0 of 500** |
+
+So a single ISR lands inside one step and costs ~3930 cycles (18 us). Only the
+501-step fixture is long enough to catch it — the 100-step runs take ~1.9 ms and
+see none, which is consistent with a rare periodic event rather than a per-step
+cost. The kernel is tickless, so the nominal 10 kHz tick rate is not the
+interrupt rate.
+
+The ~300-cycle drop in *every* step under `irq_lock` is **not explained**. It is
+systematic and reproducible, and it is not an interrupt, since it moves the
+minimum. Recorded rather than guessed at.
+
+**What this means for a real control loop:** the worst *uninterrupted* step is
+3992 cycles, 18.5 us. At a 1 kHz tick that is 1.9% of the period, and a single
+ISR intrusion adds another 1.8%. Both fit; neither is invisible.
+
+### Caches cost nothing, now for a cacheable working set
+
+`caches-off.conf` versus the default, on fixture 04: **bit-identical and
+cycle-identical** — same digest, and min/mean/max/spread of 3989/3997/7782/3793
+either way. **[V]**
+
+The bring-up probe found the same thing, but its working set was entirely in
+DTCM, which is never cached, so the result did not transfer. This run has ~68 KB
+of trace buffer plus the plan structures in ordinary SRAM and still shows no
+difference. The likely reason is unchanged: the hot pools are in DTCM, and the
+F7's ART accelerator covers instruction fetch from flash independently of L1.
+**[I]** for the explanation, **[V]** for the numbers. This closes the open item
+carried since bring-up.
+
+### The console drops bytes, and that is why the digest exists
+
+A 501-row trace arrives with **0 to 9 rows mangled**, and sometimes up to 22
+rows missing outright, in different places every run. Measured over five
+consecutive captures: 501/501/499/479/501 rows arriving, 0-9 of them damaged.
+
+This is the ST-Link VCP and the host serial stack, not the firmware. The digest
+is computed on-device from memory before anything is printed, and it was
+**correct on every run of the day**, including the worst-corrupted ones.
+
+Two things were tried. Pacing the device output with `k_msleep(1)` per row did
+nothing and was reverted. Setting `clocal -crtscts` on the host helped
+substantially — macOS defaults the port to hardware flow control that the VCP
+does not drive — and `console.py` now sets it, but the loss is not fully gone.
+
+So `grade-trace.py` matches rows to the reference **by their time value rather
+than by position** (a dropped row must not shift every comparison after it),
+counts and skips damaged rows, and lets the digest decide the verdict.
 
 ## The two builds
 
@@ -28,13 +105,21 @@ bash firmware/ctrl/host/build.sh
 ./firmware/ctrl/host/ctrl-host test-projects/04-2nd-order-system.plan.dcp 501 \
   | python3 firmware/scripts/grade-trace.py test-projects/04-2nd-order-system.f32.csv
 
-# 2. For the board.
+# 2. On the board. macOS/Linux:
 bash firmware/scripts/build.sh ctrl nucleo_f767zi -p always
-#   ...then flash and read the console from Windows:
-#   firmware\scripts\flash.ps1
-#   firmware\scripts\console.ps1 > run.txt
-python3 firmware/scripts/grade-trace.py test-projects/04-2nd-order-system.f32.csv run.txt
+bash firmware/scripts/flash.sh ctrl
+python3 firmware/scripts/console.py --out run.txt
+python3 firmware/scripts/grade-trace.py test-projects/04-2nd-order-system.f32.csv run.txt \
+  --expect-digest $(cargo run -q --manifest-path backend/Cargo.toml -- \
+                      --trace-hash test-projects/04-2nd-order-system.json | grep -o '0x[0-9a-f]*')
+
+#    ...or from Windows, against a WSL build tree:
+#    firmware\scripts\flash.ps1 -App ctrl
+#    firmware\scripts\console.ps1 > run.txt
 ```
+
+Flashing needs STM32CubeCLT on macOS (it installs to `/opt/ST/STM32CubeCLT_*/`
+and is not on the default `PATH`; `flash.sh` finds it).
 
 Pick a different fixture with `-- -DCTRL_PLAN=02-feedback-TF`. The step count is
 read from that fixture's `.f32.csv` at configure time, so the device always runs
@@ -104,6 +189,11 @@ exists. **[V]**
 | `src/main.c` | Zephyr harness: DTCM check, self-test, run, report |
 | `host/main.c` | native harness, same output format |
 | `plan_blob.h.in` | CMake embeds the chosen `.dcp` through this |
+| `caches-off.conf` | A/B fragment: same runtime, both L1 caches disabled |
+
+Build options: `-DCTRL_PLAN=<fixture>` picks what to run and grade against;
+`-DCTRL_IRQ_LOCK=y` runs each step inside `irq_lock()`, an attribution tool for
+the timing question above rather than a default.
 
 ## Design notes worth knowing before changing anything
 
@@ -132,9 +222,10 @@ result only ever covered a DTCM-resident working set.
 
 ## What is not here yet
 
-- **No hardware timer.** Steps run back to back. Stage D asks whether the
-  numbers are right and what a step costs; the measurement this prints is what
-  sizes the tick budget, so the timer comes after it.
+- **No hardware timer.** Steps run back to back. Stage D asked whether the
+  numbers are right and what a step costs; both are now answered, so the timer
+  is the next thing. The budget it has to fit: 3992 cycles worst-case
+  uninterrupted, plus ~3930 for an ISR intrusion.
 - **No transport.** The plan is linked in, not received. That is stage E, and
   keeping it out means a wrong number here has exactly one possible cause.
 - **No I/O bindings.** The format carries the section, the backend emits it
@@ -145,4 +236,6 @@ result only ever covered a DTCM-resident working set.
   the signal pool. `../AGENTS.md` describes the target.
 - **`wcet_estimate_ns` is still 0**, so the loader's WCET rejection is vacuous.
   The check is written and correct; the backend has nothing to stamp yet. The
-  `step_ns max` this prints on hardware is the number that closes that loop.
+  number to stamp now exists — 3992 cycles, 18.5 us at 216 MHz, worst-case
+  uninterrupted on fixture 04 — but it is per-board and per-plan, so the backend
+  needs a policy, not just a constant.

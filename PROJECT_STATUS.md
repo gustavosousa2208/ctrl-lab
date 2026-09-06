@@ -6,7 +6,7 @@ The handoff document. Refresh this file rather than starting a new one.
 | --- | --- |
 | Updated | 2026-09-06 |
 | Branch | `main`, clean, pushed |
-| HEAD | `57c4585` |
+| HEAD | `d704bee` + this session's hardware run |
 | Remote | `origin` = `git@gitea-local:gusta/ctrl-lab` — **changed**, see Loose ends |
 | Tests | 59 passing (`bun run backend:test`) |
 | Branches / stashes / tags | none besides `main` |
@@ -38,10 +38,11 @@ then run the *same validated controller* on a microcontroller and compare the
 traces. Not a Simulink replacement — a focused platform for measuring the gap
 between simulation and embedded execution.
 
-Maturity: **editor and simulator work and are verified against MATLAB. The
-control runtime now exists and is numerically correct, but has not yet run on
-the board** — it reproduces the f32 reference bit-for-bit off-target, and builds
-warning-free for the NUCLEO-F767ZI. Flashing it needs the Windows machine.
+Maturity: **the whole chain works, end to end.** A diagram simulates on the PC,
+compiles to a plan, and that plan runs on a NUCLEO-F767ZI producing a trace
+identical to the simulator's f32 reference — bit for bit, on all four fixtures.
+What is missing is not correctness but a control *loop*: no hardware timer, no
+I/O, no transport. **[V]**
 
 ## Layer status
 
@@ -49,7 +50,7 @@ warning-free for the NUCLEO-F767ZI. Flashing it needs the Windows machine.
 | --- | --- |
 | **Frontend** `frontend/` | Working. React Flow canvas in a Tauri v2 shell: block library, project save/open, scope plotting, compile report. No automated tests — see the manual checklist in `frontend/AGENTS.md`. |
 | **Backend** `backend/` | Working. Parse → validate → simulate (f64), plus `plan.rs` (compile to a Deployable Control Plan) and `exec.rs` (f32 reference executor). Verified sample-by-sample against MATLAB. |
-| **Firmware** `firmware/` | A bring-up probe **running on a NUCLEO-F767ZI**, and `firmware/ctrl/` — the plan loader, two-pass scheduler and all ten kernels. **Bit-exact against the reference on all four fixtures, but not yet flashed.** See [`firmware/ctrl/README.md`](firmware/ctrl/README.md). |
+| **Firmware** `firmware/` | `firmware/ctrl/` — the plan loader, two-pass scheduler and all ten kernels — **runs on the NUCLEO-F767ZI and is bit-exact against the reference on all four fixtures.** A step costs 13-19 us. See [`firmware/ctrl/README.md`](firmware/ctrl/README.md). |
 
 ## The three environments
 
@@ -58,13 +59,19 @@ warning-free for the NUCLEO-F767ZI. Flashing it needs the Windows machine.
   STM32CubeProgrammer is installed.
 - **WSL / Ubuntu 24.04** on the same machine — **where the firmware is built**.
   Zephyr v4.3.0 at `3568e1b6d5c`, SDK 0.17.4, in `~/zephyrproject`.
-- **macOS** (`remote-macos-gusta-mac`, Tailscale `100.70.245.53`) — a second
-  Zephyr workspace at the same version, and **a firmware build environment in
-  its own right**: `firmware/scripts/build.sh` detects the platform and sources
-  `mac-env.sh`, and the whole stack plus both firmware applications build here.
-  It cannot *flash* — the ST-Link enumerates on Windows.
-  Working checkout is `~/source/ctrl-lab`; `~/ctrl-lab` is a stale one, see
-  Loose ends. **[V]**
+- **macOS** (`remote-macos-gusta-mac`, Tailscale `100.70.245.53`) — **a
+  complete environment: build, flash, run and grade.** The board was moved here
+  on 2026-09-06 and everything in the loop works natively. **[V]**
+  - `build.sh` detects the platform and sources `mac-env.sh` (Zephyr workspace
+    at the same commit as WSL, SDK at `~/zephyr-sdk-0.17.4`; `dtc` and `gperf`
+    from Homebrew, since the macOS SDK ships no host tools).
+  - `flash.sh` drives west's stm32cubeprogrammer runner. Needs **STM32CubeCLT**,
+    which installs to `/opt/ST/STM32CubeCLT_*/` and is *not* on the default
+    `PATH`; the script finds it.
+  - `console.py` resets and captures. See Loose ends on why it must set
+    `clocal -crtscts`.
+  - Working checkout is `~/source/ctrl-lab`; `~/ctrl-lab` is a stale one, see
+    Loose ends.
 
 Everything crosses between the machines through git, not file sync. The whole
 stack builds on Windows and macOS, verified from a clean clone. **[V]**
@@ -95,7 +102,7 @@ attributable to one transition. Full detail in [`POC-PLAN.md`](POC-PLAN.md).
 | --- | --- | --- |
 | A → B | MATLAB → ctrl-lab engine, both f64 | **done**, within 1e-6 |
 | C | the DCP format + f32 | **done**, bound 5.8e-6 |
-| D | C kernels + scheduler, 1 MCU | **in progress** — written and bit-exact off-target; not yet run on the board |
+| D | C kernels + scheduler, 1 MCU | **done** — bit-exact on hardware, all four fixtures. No timer/IO yet |
 | E | inter-MCU transport + delay | not started |
 | F | DAC/ADC, quantization, clock skew | not started |
 
@@ -141,6 +148,39 @@ builds now set the flag, and both say why. **[V]**
 This is the same failure shape as the fused-passes bug and the order-3 transfer
 function: a wrong answer that looks close enough. It is the third one this
 project has caught by measuring instead of assuming.
+
+### Then it ran on the board, and the digests still matched
+
+All four fixtures, flashed and read from macOS on 2026-09-06. Every one returns
+the digest the reference executor computes. The f32 arithmetic on a Cortex-M7
+FPU is identical to Rust's on arm64 and x86_64. **[V]**
+
+| fixture | steps | verdict | min | mean | max | ISR outliers |
+| --- | --- | --- | --- | --- | --- | --- |
+| `01-double-integrator` | 101 | bit-for-bit | 3108 | 3110 | 3341 | 0 / 100 |
+| `02-feedback-TF` | 101 | bit-for-bit | 2736 | 2739 | 3080 | 0 / 100 |
+| `03-TF-test` | 101 | bit-for-bit | 3824 | 3835 | 4161 | 0 / 100 |
+| `04-2nd-order-system` | 501 | bit-for-bit | 3989 | 3997 | **7782** | 1 / 500 |
+
+Cycles at 216 MHz: a control step costs **13-19 us**.
+
+Three results came out of the run, each closing something that was open:
+
+1. **The big outlier is an interrupt, proven not assumed.** Fixture 04's max is
+   double its mean, reproducible to the cycle at step 373 across resets.
+   Building with `-DCTRL_IRQ_LOCK=y` takes it from 1 outlier in 500 to **0**,
+   and max from 7882 to 3992. So one ISR lands inside one step and costs ~3930
+   cycles. The worst *uninterrupted* step is 3992 cycles — at a 1 kHz tick,
+   1.9% of the period, with an ISR intrusion adding another 1.8%. **[V]**
+   Unexplained: every step is also ~300 cycles faster under `irq_lock`, which
+   moves the *minimum* and so is not an interrupt. Recorded, not guessed at.
+2. **The cache A/B is closed.** Caches on versus off is **bit-identical and
+   cycle-identical** — 3989/3997/7782 either way. Unlike the probe's run, this
+   one has ~68 KB of trace buffer and the plan structures in ordinary cacheable
+   SRAM, so the result now covers the case the probe could not speak to. **[V]**
+3. **`wcet_estimate_ns` finally has a number to stamp**: 3992 cycles, 18.5 us.
+   It is per-board and per-plan, so what the backend still needs is a policy
+   rather than a constant.
 
 ## Hardware
 
@@ -191,6 +231,9 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 | f32 reference trace | `… -- --emit-trace out.csv <project.json>` | **[V]** |
 | Build the probe | `bash firmware/scripts/build.sh bringup nucleo_f767zi -p always` | **[V]** WSL and macOS |
 | Build the runtime | `bash firmware/scripts/build.sh ctrl nucleo_f767zi -p always` | **[V]** warning-free, 30 KB flash / 75 KB RAM / 384 B DTCM |
+| Flash it (macOS) | `bash firmware/scripts/flash.sh ctrl` | **[V]** |
+| Read the console (macOS) | `python3 firmware/scripts/console.py --out run.txt` | resets, then reads **[V]** |
+| Grade a device run | `python3 firmware/scripts/grade-trace.py test-projects/04-2nd-order-system.f32.csv run.txt --expect-digest 0xfddb22c1a9525b2c` | **[V]** PASS - bit-for-bit |
 | Host harness | `bash firmware/ctrl/host/build.sh` | **[V]** |
 | Grade a trace | `./firmware/ctrl/host/ctrl-host <plan.dcp> <steps> \| python3 firmware/scripts/grade-trace.py <ref.f32.csv>` | **[V]** PASS on all four |
 | Bit-exact digest | `cargo run --manifest-path backend/Cargo.toml -- --trace-hash test-projects/04-2nd-order-system.json` | **[V]** matches the C core |
@@ -200,6 +243,17 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 
 ## Loose ends
 
+- **The board's console drops bytes** — measured over five consecutive
+  captures, 501/501/499/479/501 rows arrived of 501, with 0 to 9 of them
+  damaged. It is the ST-Link VCP and the host serial stack, not the firmware:
+  the on-device digest is computed from memory before anything is printed and
+  was correct on every run of the day, including the worst-corrupted one. This
+  is the single best argument for why the digest exists. Two fixes were tried: device-side pacing (`k_msleep(1)` per row) did
+  nothing and was reverted; **`stty clocal -crtscts` helped substantially**,
+  because macOS defaults the port to hardware flow control the VCP does not
+  drive. `console.py` sets it. The loss is reduced, not eliminated, so
+  `grade-trace.py` matches rows by time rather than position and skips damaged
+  ones. **[V]**
 - **There are two checkouts on the Mac, and they disagree.** Work happens in
   `~/source/ctrl-lab` (this one, `origin` = `git@gitea-local:gusta/ctrl-lab`).
   `~/ctrl-lab` is an older clone at `7585ca9`, clean, pointing at
@@ -271,34 +325,25 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 
 ## Next actions
 
-Ordered. The runtime is written and correct off-target, so **the board is the
-blocker again** — items 1 to 3 all need a flash from Windows.
+Ordered. Stage D is closed and the board is on the Mac, so nothing here is
+blocked on hardware access or on a machine switch.
 
-1. **Flash `ctrl` and grade the device trace.** Everything for this is built and
-   verified except the flash itself:
-
-   ```powershell
-   # Windows, board attached. flash.ps1 already takes -App; no edit needed.
-   firmware\scripts\flash.ps1 -App ctrl
-   firmware\scripts\console.ps1 > run.txt
-   python3 firmware\scripts\grade-trace.py test-projects\04-2nd-order-system.f32.csv run.txt
-   ```
-
-   The bar is the digest, not the tolerance: `0xfddb22c1a9525b2c` for fixture 04.
-   The build must exist in WSL first — the Mac's build tree is not visible to
-   Windows, so re-run `build.sh ctrl nucleo_f767zi` there.
-2. **Re-run the cache A/B**, now that there is something to measure. Build with
-   `VARIANT=caches-off EXTRA_CONF=caches-off.conf`, then
-   `flash.ps1 -App ctrl -Variant caches-off`; the fragment is written and builds. The trace digest must be identical either way — only the timing may
-   move. The probe's "caches are free" result only ever covered DTCM.
-3. **Stamp `wcet_estimate_ns`** from the `step_ns max` the device prints, which
-   closes the chicken-and-egg POC-PLAN describes and makes the loader's WCET
-   rejection check mean something for the first time.
-4. **Drive the step from a hardware timer.** Steps currently run back to back;
-   the measurement from item 1 is what sizes the tick budget.
-5. Not blocked by the board: `io_bindings` (stage E), the
-   `frontend/AGENTS.md` manual checklist against `bfaa9c6` — still the only
-   committed change with no verification behind it — and the `TODO.md` backlog.
+1. **Drive the step from a hardware timer.** This is what turns a runtime into
+   a control loop, and it is the last structural piece of stage D. The budget it
+   must fit is measured: 3992 cycles (18.5 us) worst-case uninterrupted, plus
+   ~3930 for an ISR intrusion. At 1 kHz that is under 4% of the period.
+2. **Decide what the backend stamps into `wcet_estimate_ns`.** The number now
+   exists but it is per-board and per-plan, so this needs a policy — probably a
+   measured per-kernel cost table summed over a plan's blocks, with a margin.
+   Until then the loader's WCET rejection is written but vacuous.
+3. **Stage E**: inter-MCU transport and `io_bindings`. The plan is currently
+   linked into the firmware; receiving one over a wire is the next unknown, and
+   `io_bind[]` is what a source/sink block needs in order to reach a pin.
+4. **Run the `frontend/AGENTS.md` manual checklist** against `bfaa9c6`. Still
+   the only committed change in the project with no verification behind it, and
+   the Mac has a GUI.
+5. Loose ends worth an hour: the duplicate `~/ctrl-lab` checkout and its stale
+   Vite server, and the `origin` remote question. Then the `TODO.md` backlog.
 
 ## History
 
@@ -383,3 +428,26 @@ Two documentation conflicts were resolved by the work rather than by argument.
 while `POC-PLAN.md` put `io_bind[]` at stage E; stage D was written without
 either, so POC-PLAN was right. And `firmware/AGENTS.md` still opened with "no
 Zephyr code exists yet", which stopped being true in this session.
+
+**Stage D on hardware** (same session, after the board moved to the Mac). The
+Mac turned out to close the whole loop: STM32CubeCLT was already installed, so
+`flash.sh` and `console.py` joined the Windows `.ps1` pair and build, flash, run
+and grade all happen on one machine now.
+
+All four fixtures ran and every digest matched. The claim the project has been
+building toward for four sessions — that a diagram simulated on a PC produces
+*the same numbers* on a microcontroller — is now measured rather than intended,
+and it holds to the bit across three architectures.
+
+The run also answered three open questions. The one large timing outlier turned
+out to be an interrupt, proven by an `irq_lock` build that took it from 1 in 500
+to 0. The cache A/B, open since bring-up because the probe only ever exercised
+DTCM, came back bit-identical *and* cycle-identical with 68 KB of cacheable
+working set. And `wcet_estimate_ns` finally has a number behind it.
+
+One wrong diagnosis is worth recording. The console drops bytes, and the first
+guess was the ST-Link's buffer, so the firmware got a 1 ms pause per row. It
+changed nothing and was reverted. The actual cause was on the host: macOS
+defaults the port to hardware flow control that the VCP does not drive. Reading
+`stty -a` first would have been quicker than editing firmware — the same lesson
+`BRINGUP.md` already draws about reading the generated `.config`.
