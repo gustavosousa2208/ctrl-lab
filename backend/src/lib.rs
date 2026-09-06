@@ -1480,6 +1480,26 @@ fn parse_discrete_transfer_function(
             numerator,
             denominator,
         );
+
+    // Same order limit the continuous path enforces in build_continuous_state_space.
+    // Until this check existed the two domains disagreed: an s-domain order 3 was
+    // rejected while a z-domain order 8 ran and produced nonsense.
+    //
+    // The limit is not arbitrary. Both paths end up packed as one dense state
+    // space in MAX_TF_ORDER-wide f32, and exec.rs's order sweep measures where
+    // that stops tracking f64 — order 3 is already 10-100x past the 5.8e-6 noise
+    // floor for clustered poles, and order 6 diverges outright. See
+    // `transfer_function_order_is_capped_at_two` and backend/AGENTS.md.
+    if !(2..=3).contains(&normalized_denominator.len())
+        || normalized_numerator.len() > normalized_denominator.len()
+    {
+        return Err(SimulationError::UnsupportedTransferFunctionShape {
+            node_id: node.id.clone(),
+            numerator_len: normalized_numerator.len(),
+            denominator_len: normalized_denominator.len(),
+        });
+    }
+
     let leading_denominator = normalized_denominator[0];
     if !leading_denominator.is_finite() || leading_denominator.abs() <= f64::EPSILON {
         return Err(SimulationError::InvalidTransferFunctionDenominator {

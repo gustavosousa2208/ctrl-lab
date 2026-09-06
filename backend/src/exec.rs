@@ -288,9 +288,35 @@ impl PlanExecutor {
     }
 }
 
-/// Largest transfer-function order the fixed-size update scratch buffer holds.
-/// Raising it costs stack, not heap; the firmware has the same constant.
-const MAX_TF_ORDER: usize = 8;
+/// Largest transfer-function order a packed state space is trusted to run.
+///
+/// This is a numerical limit, not a memory one. Both transfer-function paths
+/// pack into one dense state space and step it in f32, and
+/// `transfer_function_order_is_capped_at_two` measures how far that drifts from
+/// the f64 simulator as order rises. Against the project's 5.8e-6 noise floor,
+/// with a repeated pole at z = 0.95:
+///
+/// ```text
+///   order 1: 1.1e-6      order 5: 1.6e-1
+///   order 2: 3.5e-6      order 6: 8.4e+5   <- diverged
+///   order 3: 5.7e-4      order 7: 5.0e+8
+///   order 4: 1.7e-2      order 8: 1.5e+13
+/// ```
+///
+/// Well-separated poles survive to about order 4 (3.1e-6, then 1.8e-5 at
+/// order 5), but the cap has to hold for the worst shape a user can draw, not
+/// the best. Order 2 is the last one safe everywhere — and it costs nothing
+/// today, because a discrete PID *is* a second-order discrete transfer function
+/// and every model in `test-projects/` is order 1 or 2.
+///
+/// **If you need higher order, do not raise this.** Add the second-order-section
+/// cascade kernel that `firmware/AGENTS.md` describes and give it a new
+/// `KernelId`; keeping the roots factored is the entire point of that form.
+/// Raising the number instead buys silently wrong answers.
+///
+/// To re-measure, raise this and relax the matching check in
+/// `parse_discrete_transfer_function`, then run the sweep with `--nocapture`.
+const MAX_TF_ORDER: usize = 2;
 
 fn params_of<'a>(plan: &'a ControlPlan, block: &BlockRecord) -> &'a [f32] {
     let start = block.param_offset as usize;
@@ -544,4 +570,158 @@ mod tests {
             "an excited loop must keep evolving between ticks"
         );
     }
+
+    /// The smallest project that exercises exactly one transfer function:
+    /// `constant(1) -> transferFunction -> scope`. A step into the filter, which
+    /// is the excitation that drags its state through the whole transient.
+    fn synthetic_tf_project(numerator: &str, denominator: &str, end_time: f64) -> String {
+        format!(
+            r#"{{
+  "version": 1,
+  "kind": "ctrl-lab-project",
+  "generatedAt": "2026-09-06T00:00:00.000Z",
+  "title": "order-sweep",
+  "simulation": {{ "endTime": {end_time}, "stepSize": 0.01 }},
+  "nodes": [
+    {{ "id": "constant-1", "type": "constant", "label": "Constant", "role": "const-01",
+       "position": {{ "x": 0, "y": 0 }},
+       "properties": {{ "value": "1.0", "dataType": "f32" }} }},
+    {{ "id": "transferFunction-2", "type": "transferFunction", "label": "Transfer Function",
+       "role": "tf-01", "position": {{ "x": 144, "y": 0 }},
+       "properties": {{ "numerator": "{numerator}", "denominator": "{denominator}",
+                        "domain": "discrete", "discreteVariable": "z",
+                        "stateName": "x", "dataType": "f32" }} }},
+    {{ "id": "scope-3", "type": "scope", "label": "Scope", "role": "scope-01",
+       "position": {{ "x": 288, "y": 0 }},
+       "properties": {{ "channel": "CH-1", "timebase": "1 s/div", "dataType": "f32" }} }}
+  ],
+  "edges": [
+    {{ "id": "edge-constant-to-tf", "sourceNodeId": "constant-1", "sourcePortId": "out",
+       "targetNodeId": "transferFunction-2", "targetPortId": "in" }},
+    {{ "id": "edge-tf-to-scope", "sourceNodeId": "transferFunction-2", "sourcePortId": "out",
+       "targetNodeId": "scope-3", "targetPortId": "in" }}
+  ],
+  "graphIndex": {{
+    "nodesById": {{
+      "constant-1": {{ "type": "constant", "role": "const-01",
+                       "inputPortIds": [], "outputPortIds": ["out"] }},
+      "transferFunction-2": {{ "type": "transferFunction", "role": "tf-01",
+                               "inputPortIds": ["in"], "outputPortIds": ["out"] }},
+      "scope-3": {{ "type": "scope", "role": "scope-01",
+                    "inputPortIds": ["in"], "outputPortIds": [] }}
+    }},
+    "incomingEdgesByNodeId": {{
+      "constant-1": [],
+      "transferFunction-2": ["edge-constant-to-tf"],
+      "scope-3": ["edge-tf-to-scope"]
+    }},
+    "outgoingEdgesByNodeId": {{
+      "constant-1": ["edge-constant-to-tf"],
+      "transferFunction-2": ["edge-tf-to-scope"],
+      "scope-3": []
+    }}
+  }}
+}}"#
+        )
+    }
+
+    /// Expands `(z - p0)(z - p1)...` into coefficients, highest power first,
+    /// which is the convention the project's denominators use.
+    ///
+    /// The packed state space stores this *expanded* polynomial, which is the
+    /// whole point: a second-order-section cascade would keep the roots apart
+    /// instead. Expanding is where the precision goes.
+    fn polynomial_from_poles(poles: &[f64]) -> Vec<f64> {
+        let mut coefficients = vec![1.0];
+        for pole in poles {
+            let mut next = vec![0.0; coefficients.len() + 1];
+            for (index, coefficient) in coefficients.iter().enumerate() {
+                next[index] += *coefficient;
+                next[index + 1] -= pole * *coefficient;
+            }
+            coefficients = next;
+        }
+        coefficients
+    }
+
+    fn join(coefficients: &[f64]) -> String {
+        coefficients
+            .iter()
+            .map(|value| format!("{value}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// How far the f32 executor drifts from the f64 simulator for a filter with
+    /// the given poles. Returns `None` if the project is rejected before it can
+    /// run.
+    fn divergence_for_poles(poles: &[f64]) -> Option<f64> {
+        let denominator = polynomial_from_poles(poles);
+
+        // A bare constant numerator chosen so the DC gain is exactly 1 at every
+        // order, which keeps the output comparable as the order changes.
+        let mut numerator = vec![0.0; poles.len()];
+        numerator.push(poles.iter().map(|pole| 1.0 - pole).product());
+
+        let json = synthetic_tf_project(&join(&numerator), &join(&denominator), 4.0);
+        let dag = parse_project_json(&json).ok()?;
+        let plan = build_control_plan(&dag).ok()?;
+        let reference = simulate_validated_dag(&dag).ok()?;
+        let trace = run(&plan, reference.times.len()).ok()?;
+
+        let mut worst = 0.0f64;
+        for (slot, node_id) in dag.topological_order.iter().enumerate() {
+            let expected = &reference.values_by_node_id[node_id];
+            for (k, value) in trace.signals[slot].iter().enumerate() {
+                worst = worst.max((expected[k] - *value as f64).abs());
+            }
+        }
+        Some(worst)
+    }
+
+    /// Finds where a single packed state space stops tracking f64 in f32.
+    ///
+    /// This exists because `MAX_TF_ORDER` was picked without evidence. The
+    /// firmware design doc originally called for a biquad second-order-section
+    /// cascade precisely to avoid high-order f32 fragility; the packed state
+    /// space is the cheaper choice and is what `plan.rs` emits, so the honest
+    /// way to keep it is to know where it stops being trustworthy and refuse to
+    /// go past that, rather than to assume it is fine everywhere.
+    /// Pins `MAX_TF_ORDER`, from both sides.
+    ///
+    /// Below the cap, the packed state space must actually track f64 — measured,
+    /// not asserted from theory. Above it, the model must be refused rather than
+    /// run, because past order 2 a clustered-pole filter in f32 does not merely
+    /// lose precision, it diverges. The full sweep behind the number is recorded
+    /// on `MAX_TF_ORDER`; regenerating it means raising the cap deliberately.
+    #[test]
+    fn transfer_function_order_is_capped_at_two() {
+        // The harshest shape the cap has to survive: repeated poles close to the
+        // unit circle, where expanding the polynomial loses the most precision.
+        for pole in [0.5f64, 0.9, 0.95] {
+            for order in 1..=MAX_TF_ORDER {
+                let worst = divergence_for_poles(&vec![pole; order]).unwrap_or_else(|| {
+                    panic!("order {order} is within MAX_TF_ORDER and must still run")
+                });
+
+                eprintln!("repeated pole {pole}, order {order}: max |f64 - f32| = {worst:.3e}");
+                assert!(
+                    worst < 1.0e-5,
+                    "a repeated pole at z = {pole} at order {order} diverged by \
+                     {worst:.3e}, which is past the f32 noise floor - the packed \
+                     state space is no longer trustworthy at this order, so \
+                     MAX_TF_ORDER is too high"
+                );
+            }
+
+            assert!(
+                divergence_for_poles(&vec![pole; MAX_TF_ORDER + 1]).is_none(),
+                "order {} must be refused, not executed: in f32 this shape is \
+                 already far past the noise floor and by order 6 it diverges \
+                 outright. Silently running it is the failure this cap prevents",
+                MAX_TF_ORDER + 1
+            );
+        }
+    }
+
 }

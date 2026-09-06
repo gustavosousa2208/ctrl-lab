@@ -112,6 +112,44 @@ table). Treat that as the bound: a device trace that differs from
 change to parameter packing, kernel arithmetic, or the wire format shows up as a
 failing test rather than as a surprise on the bench.
 
+## Transfer function order limit
+
+**Transfer functions are limited to order 2**, in both the `s` and `z` domains.
+`MAX_TF_ORDER = 2` in `src/exec.rs`; `build_continuous_state_space` and
+`parse_discrete_transfer_function` both reject anything higher with
+`UnsupportedTransferFunctionShape`.
+
+This is a numerical limit, not a memory one. Every transfer function — including
+a ZOH-discretized continuous one — is packed as a single dense state space and
+stepped in f32, which stores the **expanded** denominator polynomial. Expanding
+a polynomial is precisely where f32 precision is lost, and repeated or clustered
+poles make it worse. Measured against the f64 simulator with a repeated pole at
+z = 0.95, against the 5.8e-6 noise floor above:
+
+| order | 1 | 2 | 3 | 4 | 5 | 6 |
+| --- | --- | --- | --- | --- | --- | --- |
+| max \|f64 − f32\| | 1.1e-6 | 3.5e-6 | 5.7e-4 | 1.7e-2 | 1.6e-1 | **8.4e+5** |
+
+Order 3 is already two orders of magnitude past the floor; order 6 diverges
+rather than merely losing precision. Well-separated poles hold to about order 4
+(3.1e-6, then 1.8e-5 at order 5), but the cap has to be safe for the worst shape
+a user can draw, not the best.
+
+The cap costs nothing today: every model in `test-projects/` is order 1 or 2, and
+a discrete PID *is* a second-order discrete transfer function.
+
+`exec::tests::transfer_function_order_is_capped_at_two` pins both sides — that
+order 2 still tracks f64, and that order 3 is refused rather than executed.
+
+**Do not raise the constant to support higher order.** The right move is the
+second-order-section cascade described in `../firmware/AGENTS.md`, added as a new
+`KernelId` with a `kernel_set_version` bump. Keeping the roots factored instead
+of expanded is the entire reason that form exists.
+
+Until 2026-09-06 the discrete path had **no** order check while the continuous
+path capped at 2, so an s-domain order 3 was rejected while a z-domain order 8
+ran and produced nonsense.
+
 ## Testing contract
 
 - Golden regression against MATLAB/Simulink-exported traces.
@@ -131,7 +169,7 @@ failing test rather than as a surprise on the bench.
   Tauri command emits a plan yet, and no firmware consumes one. Treat the layout
   as a proposal until a firmware loader has read it back. Transfer functions are
   packed as discrete state space (continuous ones ZOH-discretized first) rather
-  than as raw `{b, a, Ts}`; that choice is not yet reflected here or in the RST
-  discussion below.
+  than as raw `{b, a, Ts}`; **that choice is now settled and documented** under
+  "Transfer function order limit" above and in `../firmware/AGENTS.md`.
 - **Multi-rate.** Not in v1. The GCD base-rate rule above reserves the semantics
   so it can be added without changing the project format.

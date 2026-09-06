@@ -106,10 +106,49 @@ one-to-one registry mapping backend node types (`gain`, `sum`, `transferFunction
 `integrator`, `switch`, `delay`, sources) to `kernel_id`s, versioned together
 with the backend.
 
-Numerical note (ties to the f32-vs-double concern): implement the LTI /
-transfer-function kernel as a **biquad second-order-section cascade
-(direct-form II transposed)**, not one high-order difference equation, to keep
-f32 coefficient sensitivity and roundoff bounded as order grows.
+### The transfer-function kernel is a state space, capped at order 2
+
+**Settled 2026-09-06.** This paragraph previously prescribed a biquad
+second-order-section cascade. `backend/src/plan.rs` packs a single dense
+discrete state space instead, and the two disagreed for long enough that it
+blocked writing the kernel at all. The state space wins, with a limit attached.
+
+**What the firmware implements:** one kernel, `KernelId::TransferFunction = 9`,
+running `y = Cx + Du` and `x[k+1] = Ad x[k] + Bd u[k]` over the packed
+`[order, Ad, Bd, C, D]` blob. Continuous blocks are ZOH-discretized by the
+backend first, so the kernel never sees an s-domain model.
+`backend/src/exec.rs` is the executable specification — **match its summation
+order exactly** (`bd[row] * input` first, then `+= ad[row * order + column] *
+value` ascending) or bit-exactness is lost to arithmetic ordering alone.
+
+**Why not the SOS cascade.** It is the numerically better form, and the original
+note was right about *why*. But it needs the denominator factored into roots on
+the backend, plus pole-zero pairing, section ordering and gain distribution —
+new numerical code whose iterative root-finding is a genuine risk to the
+cross-platform bit-exactness the project has verified (Windows/x86_64 and
+macOS/arm64 agree today). It buys nothing at order 2, where a state space and a
+single biquad are the same computation. Every model in `test-projects/` is order
+1 or 2, and a discrete PID is itself a second-order discrete transfer function.
+
+**Why the cap is 2, and why it is not negotiable by editing a constant.** A
+dense state space stores the *expanded* denominator, and expanding a polynomial
+is where f32 precision goes. Measured against the f64 simulator with a repeated
+pole at z = 0.95, versus the project's 5.8e-6 noise floor:
+
+| order | 1 | 2 | 3 | 4 | 5 | 6 |
+| --- | --- | --- | --- | --- | --- | --- |
+| max \|f64 − f32\| | 1.1e-6 | 3.5e-6 | 5.7e-4 | 1.7e-2 | 1.6e-1 | **8.4e+5** |
+
+Order 3 is already past the floor by two orders of magnitude; order 6 diverges.
+Well-separated poles survive to about order 4, but the cap must hold for the
+worst shape a user can draw. `MAX_TF_ORDER = 2` in `exec.rs`, and both the
+continuous and discrete parsers reject anything higher.
+
+**When order > 2 is genuinely needed**, add the SOS cascade as a *second*
+kernel with a new `kernel_id` and bump `kernel_set_version` — `plan.rs` states
+the ids are "wire-stable: never renumber, only append", so the format was built
+for this. Do not raise `MAX_TF_ORDER`; that trades a loud rejection for a quiet
+wrong answer.
 
 ## Scheduling and multi-rate
 

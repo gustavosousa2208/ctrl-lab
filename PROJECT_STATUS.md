@@ -5,10 +5,10 @@ The handoff document. Refresh this file rather than starting a new one.
 | | |
 | --- | --- |
 | Updated | 2026-09-06 |
-| Branch | `main`, clean, **not pushed** — two commits ahead of `origin` |
-| HEAD | `c99f191` |
+| Branch | `main`, clean, **not pushed** — four commits ahead of `origin` |
+| HEAD | `481450f` |
 | Remote | `origin` = `git@github.com:gustavosousa2208/ctrl-lab.git` |
-| Tests | 57 passing (`bun run backend:test`) |
+| Tests | 58 passing (`bun run backend:test`) |
 | Branches / stashes / tags | none besides `main` |
 | Untracked | `Open.ps1` only — a personal 2-line launcher, superseded by `bun run tauri:dev` |
 
@@ -18,7 +18,7 @@ Evidence tags: **[V]** verified by running it, **[I]** inferred, **[?]** unknown
 
 ```bash
 bun run setup     # frontend deps + backend build
-bun run verify    # 57 backend tests + frontend build
+bun run verify    # 58 backend tests + frontend build
 bun run tauri:dev # the desktop app
 ```
 
@@ -45,7 +45,7 @@ that now runs on real hardware and has answered what it was written to ask.
 | **Backend** `backend/` | Working. Parse → validate → simulate (f64), plus `plan.rs` (compile to a Deployable Control Plan) and `exec.rs` (f32 reference executor). Verified sample-by-sample against MATLAB. |
 | **Firmware** `firmware/` | Design + a bring-up probe **running on a NUCLEO-F767ZI**. **No control runtime yet.** |
 
-## The two environments
+## The three environments
 
 - **Windows** (`C:\Users\gusta\source\ctrl-lab`) — the repo, editor and UI work,
   **and the board**: the Nucleo's ST-Link enumerates here (`COM3`), and
@@ -144,8 +144,8 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 
 | Purpose | Command | Result |
 | --- | --- | --- |
-| Everything | `bun run verify` | 57 tests + frontend build **[V]** |
-| Backend tests | `bun run backend:test` | 51 unit + 6 vector/golden **[V]** |
+| Everything | `bun run verify` | 58 tests + frontend build **[V]** |
+| Backend tests | `bun run backend:test` | 52 unit + 6 vector/golden **[V]** |
 | Compile a plan | `cargo run --manifest-path backend/Cargo.toml -- --emit-plan out.dcp test-projects/04-2nd-order-system.json` | 355 bytes **[V]** |
 | Inspect a plan | `… -- --dump-plan out.dcp` | **[V]** |
 | f32 reference trace | `… -- --emit-trace out.csv <project.json>` | **[V]** |
@@ -190,10 +190,13 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
   except its own round-trip test. `io_bindings` is always empty and
   `wcet_estimate_ns` is hardcoded to `0`, which makes the loader's designed WCET
   rejection check vacuous.
-- **`firmware/AGENTS.md` and `plan.rs` disagree on the transfer-function
-  kernel.** The doc prescribes a biquad second-order-section cascade for f32
-  robustness; `plan.rs` packs a single discrete state space. Reconcile before
-  writing the kernel.
+- ~~`firmware/AGENTS.md` and `plan.rs` disagree on the transfer-function
+  kernel.~~ **Settled** — the packed discrete state space wins, **capped at
+  order 2**, and the docs now say so. The cap is measured, not chosen: at order
+  3 a clustered-pole filter in f32 is already 100× past the 5.8e-6 noise floor,
+  and by order 6 it diverges outright. The SOS cascade is the documented path
+  when order > 2 is genuinely needed — as a *new* `KernelId`, never by raising
+  the constant. See `backend/AGENTS.md`, "Transfer function order limit". **[V]**
 - **RST controller form is undecided.** Long-standing `TODO.md` item. Note that
   stage C established a PID needs no new kernel — a discrete PID *is* a
   second-order discrete transfer function, which the existing kernel runs.
@@ -206,9 +209,10 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 Ordered. Bring-up is finished, so the board no longer blocks anything — the
 blocker is now a decision, not hardware.
 
-1. **Reconcile `firmware/AGENTS.md` with `plan.rs`** — state space or biquad SOS,
-   and settle `io_bindings` and `wcet_estimate_ns`. **This is the one thing
-   standing between here and a control runtime**, and it needs no hardware.
+1. **Settle `io_bindings` and `wcet_estimate_ns`.** The kernel-form question is
+   now closed; these two are what is left of the DCP draft. `io_bindings` is
+   always empty and `wcet_estimate_ns` is hardcoded to `0`, which makes the
+   loader's designed WCET rejection check vacuous. No hardware needed.
 2. **Stage D proper**: write the plan loader, the kernel dispatch table and the
    two-pass scheduler. Grade the device trace against
    `test-projects/NN-*.f32.csv`; the bar is bit-for-bit, and the f32 noise floor
