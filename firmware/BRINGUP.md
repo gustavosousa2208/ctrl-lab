@@ -327,6 +327,15 @@ both boards, so this is instruction fetch, and the H7 has no ART accelerator to
 make L1 redundant. Small, but no longer zero — and it means the F767's "caches
 cost nothing" result must not be generalised to this part. **[V]**
 
+**And 2% badly understates it once there is a real working set.** This probe's
+loop is DTCM-resident, so the cache has almost nothing to do. Running the actual
+control runtime, which keeps a trace buffer and the plan structures in ordinary
+SRAM, the same A/B on this board gives **3.6x on throughput and 24x on jitter**
+— 623 against 2259 cycles per step, and 5183 ns against 216 ns of tick jitter.
+The full four-way table is in [`ctrl/README.md`](ctrl/README.md). The lesson is
+the one this file keeps relearning: a measurement taken on a working set that
+fits in TCM says nothing about one that does not.
+
 ### RTT on this board: three traps, all of them measured
 
 The console is USB CDC ACM by default, which loses everything printed before

@@ -234,17 +234,51 @@ STM32H743 (Cortex-M7 at 240 MHz).
 The step figures are not comparable head to head — six blocks against three —
 but the H743's per-block speed advantage from the bring-up probe carries over.
 
-**Two anomalies, recorded rather than tidied away:**
+### On the H743, the D-cache buys throughput and costs determinism
 
-- **Tick jitter is 5183 ns on the H743 against 78 ns on the F767** — 66x worse,
-  for the same scheduler and the same 10 kHz kernel tick. Not explained. It does
-  not affect correctness (the digest matches and no deadline was missed) but it
-  matters for stage E, where the two boards' clocks are the thing being measured.
-- **`cpu_awake` reported a max of 10 352 907 cycles against a mean of 24 244.**
-  That is 86% of a tick spent awake for a step that takes 623 cycles, which is
-  not credible; it is far more likely an instrumentation fault in the awake-time
-  measurement than a real stall. The mean, the step timings and the deadline
-  count are all consistent, so only that one statistic is suspect.
+The H743 first measured **5183 ns of tick jitter against the F767's 78 ns** — 66x
+worse for the same scheduler and the same 10 kHz kernel tick. It is the D-cache.
+Same plan, 501 steps, 50 ms tick, all four combinations measured. **[V]**
+
+| board | caches | step cycles | tick jitter | awake/tick |
+| --- | --- | --- | --- | --- |
+| F767ZI @216 MHz | on | 2253 | 17 cyc, **78 ns** | 10 434 |
+| F767ZI @216 MHz | off | 2253 | 17 cyc, **78 ns** | 10 434 |
+| H743 @240 MHz | on | **623** | 1244 cyc, **5183 ns** | 24 244 |
+| H743 @240 MHz | off | 2259 | 52 cyc, **216 ns** | 10 041 |
+
+Three things fall out of that table.
+
+**On the F767 the caches are free — identically, to the cycle.** The bring-up
+probe found this with a DTCM-only working set and the result was explicitly not
+generalised; it now also holds for the control runtime, which keeps a trace
+buffer and the plan structures in ordinary SRAM. **[V]**
+
+**On the H743 they are a 3.6x throughput win and a 24x jitter cost.** That is the
+classic real-time trade, measured rather than argued: cache hits are fast and
+cache misses are not, and a control loop feels the difference as jitter. The
+probe's H743 A/B saw only 2% because its loop lived entirely in DTCM, which is
+never cached — the same reason its result did not transfer.
+
+**With caches off the two boards are nearly identical** — 2259 against 2253
+cycles per step, 10 041 against 10 434 awake. They are the same Cortex-M7, so
+the H743's entire advantage is its cache and memory path, not its core or its
+extra 24 MHz. **[I]** for the mechanism, and the likely reason is that the H743
+puts main RAM in AXI SRAM in the D1 domain, far from the core, where a miss is
+expensive; the F767's SRAM is core-adjacent and its ART accelerator already
+covers instruction fetch, leaving L1 with nothing to add.
+
+**What this means for stage E:** the plant board should probably run caches off.
+Its step has 50 ms of headroom either way, and E3 measures clock skew between the
+two boards — 5 us of self-inflicted jitter on one of them is noise in exactly the
+measurement being made.
+
+The `cpu_awake` outlier went with it: 10 352 907 cycles against a mean of 24 244
+with caches on, and 10 048 against 10 041 with them off. It is therefore
+cache-correlated, but the *magnitude* is still unexplained — 10.3 M cycles is
+43 ms of a 50 ms tick, which no number of cache misses accounts for and which
+contradicts the zero missed deadlines reported in the same run. Treat it as an
+instrumentation artifact in the awake-time measure, not as observed behaviour.
 
 Build it with:
 
