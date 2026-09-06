@@ -14,6 +14,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/linker/section_tags.h>
+#include <zephyr/sys/barrier.h>
 #include <zephyr/sys/printk.h>
 
 /* Where DTCM actually is, taken from the devicetree rather than hardcoded, so
@@ -54,10 +55,17 @@ static float state_pool[MAX_STATE] __dtcm_bss_section;
  */
 #define DWT_CTRL   (*(volatile uint32_t *)0xE0001000UL)
 #define DWT_CYCCNT (*(volatile uint32_t *)0xE0001004UL)
+#define DWT_LAR    (*(volatile uint32_t *)0xE0001FB0UL)
+#define DWT_LSR    (*(volatile uint32_t *)0xE0001FB4UL)
 #define DEMCR      (*(volatile uint32_t *)0xE000EDFCUL)
 
-#define DEMCR_TRCENA    (1UL << 24)
-#define DWT_CTRL_CYCCNT (1UL << 0)
+#define DEMCR_TRCENA     (1UL << 24)
+#define DWT_CTRL_CYCCNT  (1UL << 0)
+#define DWT_CTRL_NOCYCCNT (1UL << 25)  /* set = CYCCNT not implemented */
+
+#define DWT_LSR_PRESENT (1UL << 0)     /* a Lock Access Register exists */
+#define DWT_LSR_LOCKED  (1UL << 1)     /* and writes are currently locked */
+#define DWT_LAR_UNLOCK  0xC5ACCE55UL
 
 static bool is_in_dtcm(const void *p)
 {
@@ -66,11 +74,100 @@ static bool is_in_dtcm(const void *p)
 	return a >= DTCM_BASE && a < DTCM_BASE + DTCM_SIZE;
 }
 
-static void cycle_counter_enable(void)
+/* Returns false if this core cannot count cycles at all, so a caller never
+ * reports a measurement of zero as if it were a fast one.
+ *
+ * The first version of this probe did only TRCENA + CYCCNTENA, which is the
+ * sequence every Cortex-M3/M4 tutorial gives, and CYCCNT stayed at 0 on the
+ * F767. On Cortex-M7 the DWT is behind a CoreSight Lock Access Register: while
+ * it is locked, writes to DWT registers are silently discarded -- enabling the
+ * counter appears to succeed and simply does nothing. Zephyr's own
+ * arch/arm/include/cortex_m/dwt.h does the same unlock, guarded the same way.
+ *
+ * Zephyr also offers this as a supported service via CONFIG_TIMING_FUNCTIONS
+ * (timing_init/timing_counter_get, DWT-backed on Cortex-M). The probe stays
+ * self-contained on purpose, but the control runtime should prefer that API:
+ * it is portable to cores whose DWT is laid out differently.
+ */
+/* The LSR as found at entry, before we unlock anything. Reading it after the
+ * unlock only ever shows "unlocked" and hides why the unlock was needed.
+ */
+static uint32_t dwt_lsr_at_entry;
+
+/* Put the DWT back to something close to its cold state, so the enable
+ * sequences below can be compared against each other rather than against
+ * whatever the previous attempt left behind.
+ */
+static void dwt_disable(void)
+{
+	DWT_CTRL &= ~DWT_CTRL_CYCCNT;
+	DWT_CYCCNT = 0;
+	DEMCR &= ~DEMCR_TRCENA;
+	barrier_dsync_fence_full();
+}
+
+/* The minimal enable sequence, with or without barriers, and nothing else.
+ *
+ * This exists to answer a question the first run raised rather than to be used:
+ * the naive sequence (the one in every Cortex-M3/M4 tutorial) left CYCCNT dead
+ * on this part, and the working version changed several things at once. Running
+ * both here isolates which one mattered instead of guessing.
+ */
+static bool dwt_try_enable(bool serialize)
 {
 	DEMCR |= DEMCR_TRCENA;
+
+	if (serialize) {
+		barrier_dsync_fence_full();
+	}
+
 	DWT_CYCCNT = 0;
 	DWT_CTRL |= DWT_CTRL_CYCCNT;
+
+	if (serialize) {
+		barrier_dsync_fence_full();
+	}
+
+	uint32_t c0 = DWT_CYCCNT;
+	uint32_t c1 = DWT_CYCCNT;
+
+	return c1 != c0;
+}
+
+static bool cycle_counter_enable(void)
+{
+	DEMCR |= DEMCR_TRCENA;
+
+	dwt_lsr_at_entry = DWT_LSR;
+
+	/* Unlock only if a LAR is present and currently locked. On parts with no
+	 * LAR the LSR reads as absent and this is correctly skipped.
+	 */
+	if ((dwt_lsr_at_entry & DWT_LSR_PRESENT) != 0U) {
+		if ((dwt_lsr_at_entry & DWT_LSR_LOCKED) != 0U) {
+			DWT_LAR = DWT_LAR_UNLOCK;
+		}
+	}
+
+	if ((DWT_CTRL & DWT_CTRL_NOCYCCNT) != 0U) {
+		return false;
+	}
+
+	DWT_CYCCNT = 0;
+	DWT_CTRL |= DWT_CTRL_CYCCNT;
+	barrier_dsync_fence_full();
+
+	/* Two reads rather than one compared against zero. The single-read check
+	 * is a race: the enabling write can still be in flight when the read
+	 * issues, so a working counter intermittently reports itself dead. It did
+	 * exactly that on this board -- "DEAD" alongside a plausible nonzero
+	 * measurement, which is how the race was noticed. Two reads of a running
+	 * counter always differ, because the read itself costs cycles.
+	 */
+	uint32_t c0 = DWT_CYCCNT;
+	uint32_t c1 = DWT_CYCCNT;
+
+	return c1 != c0;
 }
 
 /* Stand-in for a control step: a chain of dependent f32 multiply-accumulates,
@@ -102,9 +199,27 @@ int main(void)
 	printk("core %u Hz, kernel tick %u Hz\n",
 	       sys_clock_hw_cycles_per_sec(), CONFIG_SYS_CLOCK_TICKS_PER_SEC);
 
-	cycle_counter_enable();
-	if (DWT_CYCCNT == 0) {
-		printk("WARNING: DWT cycle counter is not running\n");
+	/* Which part of the fix actually mattered. Cold first, then barriers only. */
+	bool naive_ok = dwt_try_enable(false);
+
+	dwt_disable();
+
+	bool barrier_ok = dwt_try_enable(true);
+
+	dwt_disable();
+
+	printk("DWT enable: naive=%s barriers-only=%s\n",
+	       naive_ok ? "counts" : "DEAD", barrier_ok ? "counts" : "DEAD");
+
+	bool timed = cycle_counter_enable();
+
+	printk("DWT: lsr_at_entry=0x%08x (%s) ctrl=0x%08x cyccnt=%s\n",
+	       (unsigned int)dwt_lsr_at_entry,
+	       (dwt_lsr_at_entry & DWT_LSR_LOCKED) ? "was locked, unlocked it"
+						   : "was already unlocked",
+	       (unsigned int)DWT_CTRL, timed ? "running" : "DEAD");
+	if (!timed) {
+		printk("WARNING: no cycle counter - every timing below is meaningless\n");
 	}
 
 	for (int i = 0; i < MAX_SIGNALS; i++) {

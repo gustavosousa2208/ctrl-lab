@@ -9,12 +9,69 @@ still hold for that board, and most of the analysis carried over intact.
 
 ## The NUCLEO-F767ZI
 
-Verified 2026-09-05. **Everything in this section is a build result [V]. No
-runtime output has been read yet [?]** — the board had not enumerated on the
-host at the time of writing.
+**Running on hardware since 2026-09-06 [V]** — flashed over the onboard ST-Link
+and read back over its virtual COM port. Everything below is a measurement or a
+generated artifact unless tagged otherwise.
 
 The switch was cheap, and mostly a win. The board is `nucleo_f767zi` in Zephyr
 v4.3.0, and the probe built for it **unmodified except for comments**.
+
+### What the board actually says
+
+The full boot output, reproducible across resets:
+
+```
+*** Booting Zephyr OS build v4.3.0 ***
+ctrl-lab bringup probe
+board nucleo_f767zi/stm32f767xx, SoC stm32f767xx
+DTCM is 128 KB at 0x20000000
+signal_pool @ 0x20000100  in DTCM
+state_pool  @ 0x20000000  in DTCM
+icache=1 dcache=1 fpu_dp=1
+core 216000000 Hz, kernel tick 10000 Hz
+DWT enable: naive=counts barriers-only=counts
+DWT: lsr_at_entry=0x00000001 (was already unlocked) ctrl=0x40000001 cyccnt=running
+63 dependent f32 MACs: first=1670 best=1653 worst=1670 cycles (spread 17)
+at 1 kHz a control step may use 216000 cycles
+```
+
+The probe's three questions, answered:
+
+1. **The pools are in DTCM.** `0x20000000` and `0x20000100`, checked at runtime
+   against the devicetree rather than inferred from `nm`. This is the first time
+   the project has had that as anything but linker output.
+2. **The cycle counter works**, at the full 216 MHz core clock — so a control
+   step can be timed.
+3. **The caches cost nothing measurable**, which was not the expected answer.
+   See below.
+
+The workload is 63 dependent f32 multiply-accumulates: **1653–1670 cycles**,
+about 26 cycles each, with a **spread of 17 cycles (~1%)** over 100 runs.
+Identical to the cycle across resets and across both cache variants. At 1 kHz
+the budget is 216 000 cycles, so this stand-in uses **0.77%** of it.
+
+### The caches cost nothing here, and that is a property of the build
+
+The H743 analysis called the caches "the determinism hazard on this part" and
+expected the A/B to show it. Measured, the caches-off variant
+(`bringup/caches-off.conf`, `CONFIG_ICACHE=n` + `CONFIG_DCACHE=n`, confirmed
+absent from the generated `.config`) is **bit-identical**: `first=1670
+best=1653 worst=1670`, spread 17, the same numbers to the cycle.
+
+Two reasons, both structural rather than luck:
+
+- **The hot pools are in DTCM, which is never cached.** D-cache has nothing to
+  do with this working set by construction — that is the point of putting them
+  there.
+- **`CONFIG_STM32_FLASH_PREFETCH=y` in both variants.** The F7's ART accelerator
+  sits in front of flash *independently* of the Cortex-M7 L1 caches, so a tight
+  loop's instruction fetch is already covered with `ICACHE=n`. This is a real
+  difference from the H743, where ART is not the same mechanism.
+
+**Do not carry this conclusion into the control runtime.** It holds for a
+workload that never touches cacheable memory. Once the trace buffer and plan
+structures live in `sram0`, D-cache is back in the picture and the A/B has to be
+re-run. The probe cannot answer that question — see the known weakness below.
 
 ### What the board gives us for free
 
@@ -56,32 +113,45 @@ explicit in-DTCM / **NOT IN DTCM** verdict per pool at boot, computed from
 `DT_REG_ADDR(DT_CHOSEN(zephyr_dtcm))`. "The section exists" and "the data landed
 in it" are different claims, and only the second one matters.
 
-### The one regression: no double-precision FPU
+### Double precision is present — and the near-miss that says why to check
 
-`soc/st/stm32/stm32h7x/Kconfig` has
+**`fpu_dp=1` on the board.** Both f32 and f64 run in hardware here, as on the
+H743. The control plan stays f32 for footprint, not for speed.
+
+This entry exists because it was first recorded as the opposite, and the mistake
+is worth more than the fact. `soc/st/stm32/stm32h7x/Kconfig` selects the symbol
+where you would look for it:
 
 ```
 select CPU_HAS_FPU_DOUBLE_PRECISION if CPU_CORTEX_M7
 ```
 
-`soc/st/stm32/stm32f7x/Kconfig` **does not**, though it does select
-`CPU_HAS_FPU`, `CPU_HAS_ICACHE` and `CPU_HAS_DCACHE`. The symbol is promptless
-in `arch/Kconfig`, so it is select-only and **cannot be turned on from
-`prj.conf`**.
+`soc/st/stm32/stm32f7x/Kconfig` does **not** — it selects only `CPU_HAS_FPU`,
+`CPU_HAS_ICACHE` and `CPU_HAS_DCACHE`. Reading those two files side by side, the
+conclusion "the F7 has no double-precision FPU in Zephyr" is the obvious one,
+and it is wrong. The series `Kconfig.defconfig` ends with
 
-The STM32F767 silicon *does* have the FPv5-D16 double unit — this is a Zephyr
-packaging gap, not a hardware limit. Either way, on this board as Zephyr builds
-it, `float` is hardware and `double` is software-emulated.
+```
+rsource "Kconfig.defconfig.stm32f7*"
+```
 
-That does not affect the control plan, which is f32 end to end. It does mean a
-stray `double` in a kernel — a bare `0.1` literal rather than `0.1f`, `sin()`
-rather than `sinf()` — becomes a soft-float library call with unbounded WCET. On
-this board that is a determinism bug, not merely a slow path. The probe prints
-`fpu_dp=` so the fact is visible at boot rather than remembered.
+and `Kconfig.defconfig.stm32f767xx:11` supplies
+`CPU_HAS_FPU_DOUBLE_PRECISION` per die.
 
-Note this reverses, for the third time, what the project believes about f64 on
-the target: soft on the Cortex-M4F originally assumed, hardware on the H743,
-soft again here.
+This is the **third** time this project has been caught by exactly one thing:
+concluding from a Kconfig or devicetree file without following what it pulls in.
+The H743 notes below record the same error twice, on `#include`. Here it was an
+`rsource` glob. The rule that would have caught all three: **never conclude from
+a source file when a generated artifact can be read instead.** `zephyr/.config`
+in the build directory is the ground truth for Kconfig, and it said
+`CONFIG_CPU_HAS_FPU_DOUBLE_PRECISION=y` the whole time.
+
+The probe prints `fpu_dp=` so this is checked at boot rather than remembered.
+
+Even with the unit present, a stray `double` in a kernel — a bare `0.1` rather
+than `0.1f`, `sin()` rather than `sinf()` — still costs f64 work where f32 was
+intended, and silently breaks bit-exact agreement with the f32 reference
+executor. Worth catching in review; just not the WCET cliff it would have been.
 
 ### Building and flashing
 
@@ -94,13 +164,28 @@ part, and no driver juggling.
 ```bash
 # in WSL
 bash firmware/scripts/build.sh bringup nucleo_f767zi -p always
+
+# a Kconfig variant, in its own build tree so both survive
+VARIANT=caches-off EXTRA_CONF=caches-off.conf \
+    bash firmware/scripts/build.sh bringup nucleo_f767zi -p always
 ```
 
 ```powershell
 # in Windows PowerShell
 firmware\scripts\flash.ps1
+firmware\scripts\flash.ps1 -Variant caches-off
 firmware\scripts\console.ps1
 ```
+
+Two things that are easy to get wrong, both handled by the scripts:
+
+- **`console.ps1` resets the board after opening the port**, and must. The probe
+  prints once at boot and then idles, so attaching to the port afterwards shows
+  an empty screen — the output has already gone. Open first, then reset.
+- **Reset with `mode=UR`, not `mode=HOTPLUG`.** Once `main()` returns the core
+  idles in WFI and a hotplug attach fails outright with `Error: Unable to read
+  device id from ROM table`. Under Reset holds NRST while connecting and always
+  attaches. This is also why `flash.ps1` connects under reset.
 
 `firmware/scripts/wsl-env.sh` holds the environment. Two things are not on the
 default `PATH` and cost time to rediscover: **`cmake` and `ninja` live in the
@@ -133,7 +218,8 @@ a no-op, not the filename.
 ### Memory budget
 
 2 MB flash, 384 KB SRAM (`sram0`, covering SRAM1+SRAM2), 128 KB DTCM. The probe
-uses **1.16% of flash and 1.30% of RAM**, so there is room to be generous.
+uses **1.18% of flash and 1.30% of RAM**, and 512 B of DTCM (0.39%), so there is
+room to be generous.
 
 Stage D's record-then-dump trace — 5000 ticks × 6 signals × 4 B = 120 KB — fits
 main SRAM comfortably. Keep it there rather than in DTCM: it is written once per
@@ -143,10 +229,46 @@ signal and state pools are touched several times per tick and do.
 ### Known weakness in the probe
 
 `fake_step()` reads and writes only DTCM, which is **never cached**. So the
-current cache A/B measurement can only show I-cache effects on the code path —
-it cannot show what D-cache costs, because it never touches cacheable memory.
-Before drawing any conclusion from an `ICACHE=n` / `DCACHE=n` comparison, give
-the probe a working set in `sram0` as well.
+cache A/B can only ever show I-cache effects on the code path — it cannot show
+what D-cache costs, because it never touches cacheable memory.
+
+This was written down as a caveat before the measurement and then confirmed by
+it: the A/B came back bit-identical, which is the result you would predict from
+the caveat alone. **Give the probe a working set in `sram0` before treating
+"caches are free" as a fact about the control runtime.**
+
+### One unexplained anomaly: the cycle counter, once
+
+On the very first flash, the probe reported `WARNING: DWT cycle counter is not
+running` and measured `first=0 best=0 worst=0`. Every run since has counted
+correctly. **It has not reproduced**, and two plausible causes were tested and
+rejected — recorded here so nobody spends the time again:
+
+| Hypothesis | Test | Result |
+| --- | --- | --- |
+| Cortex-M7 DWT needs its CoreSight Lock Access Register unlocked with `0xC5ACCE55` | print `DWT->LSR` *before* unlocking | **Rejected.** `lsr_at_entry=0x00000001` — LAR present, already unlocked. The unlock never fires |
+| The `TRCENA` write needs a barrier before DWT registers accept writes | run the naive sequence and a barriers-only sequence, cold, and compare | **Rejected.** `naive=counts barriers-only=counts` — the tutorial sequence works fine |
+
+A third possibility — that the failed `mode=HOTPLUG` attach immediately before
+that run left the debug subsystem wedged — was also tested by provoking the same
+failed attach and resetting. The counter kept working. Rejected.
+
+So the cause is unknown. What changed is that the failure can no longer be
+quiet:
+
+- `dwt_try_enable()` verifies with **two reads of `CYCCNT` compared against each
+  other**, not one read compared against zero. The single-read check is itself a
+  race — the enabling write can still be in flight — and it was observed
+  reporting `DEAD` alongside a plausible nonzero measurement, which is how the
+  race was noticed.
+- `DWT_CTRL.NOCYCCNT` is checked, so a core without the counter is distinguished
+  from one that has it and is not counting.
+- The LAR unlock is kept even though it does not fire here. It costs two reads
+  at boot and is correct on a part that does lock it.
+
+**This matters for stage D**: a dead cycle counter reports zero, and zero looks
+like a fast control step rather than a broken measurement. Never accept a timing
+of 0.
 
 Recorded rather than fixed, deliberately: the first flash should test the
 pipeline, not new code.

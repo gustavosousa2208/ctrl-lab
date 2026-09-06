@@ -6,13 +6,23 @@
   device stack running on the target and nothing lost before enumeration. That
   is the main practical win over the WeAct board's USB CDC ACM console.
 
-  Usage:  .\console.ps1 [-Port COM5] [-Baud 115200] [-Seconds 15]
+  By default this RESETS the board after opening the port. The probe prints once
+  at boot and then idles, so simply attaching to the port shows nothing at all -
+  the output has already been and gone. Open first, then reset.
+
+  Use mode=UR (connect under reset), not HOTPLUG: once main() returns the core
+  idles in WFI and a hotplug attach fails with "Unable to read device id from
+  ROM table". Under Reset holds NRST while connecting, so it always attaches.
+
+  Usage:  .\console.ps1 [-Port COM5] [-Baud 115200] [-Seconds 10] [-NoReset]
           Omit -Port to auto-pick the ST-Link VCP.
+          -NoReset just listens, for firmware that prints continuously.
 #>
 param(
     [string]$Port,
     [int]$Baud    = 115200,
-    [int]$Seconds = 15
+    [int]$Seconds = 10,
+    [switch]$NoReset
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,14 +36,28 @@ if (-not $Port) {
     Write-Host "using $Port  ($($vcp.Name))"
 }
 
+$cli = 'C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\STM32_Programmer_CLI.exe'
+
 $sp = New-Object System.IO.Ports.SerialPort $Port, $Baud, 'None', 8, 'One'
-$sp.ReadTimeout = 500
+$sp.ReadTimeout = 400
 $sp.Open()
 try {
-    Write-Host "--- reading $Port for ${Seconds}s (reset the board to see boot output) ---"
+    if (-not $NoReset) {
+        Start-Sleep -Milliseconds 400
+        $sp.DiscardInBuffer()
+        Write-Host "--- resetting board ---"
+        # SWD and the VCP are separate USB interfaces on the ST-Link, so
+        # resetting over one while reading the other is fine.
+        Start-Process -FilePath $cli `
+                      -ArgumentList '-c','port=SWD','mode=UR','-rst' `
+                      -NoNewWindow -Wait `
+                      -RedirectStandardOutput "$env:TEMP\ctrl-lab-reset.log"
+    }
+
+    Write-Host "--- reading $Port for ${Seconds}s ---"
     $deadline = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $deadline) {
-        try { $line = $sp.ReadLine(); Write-Host $line }
+        try { Write-Host $sp.ReadLine() }
         catch [TimeoutException] { }
     }
 } finally { $sp.Close() }
