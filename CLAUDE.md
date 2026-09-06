@@ -149,7 +149,9 @@ Between the profiles in the managed block, this repository uses:
   not exceptional — they are the restore points. Explain *why* in the message,
   in the style of the existing history.
 - **Push only when asked.** Never push without the user saying so in the current
-  session.
+  session. When you do push, `origin` fans out to both `gitea-local` and
+  `github` — GitHub is the backup for when the local Gitea is down — so a plain
+  `git push origin main` reaches both and neither should be pushed to alone.
 - **Never rewrite published history** without being asked.
 
 `bd prime` may print a "no git operations / stealth mode" line. That is a

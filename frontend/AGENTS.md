@@ -31,3 +31,7 @@
   - `Delete` removes the actual current selection
   - `Ctrl+Z` / `Cmd+Z` undoes graph edits without closing the project
   - save/open preserves viewport
+  - top bar stays in two left-aligned groups, editor chrome first and simulation
+    controls after it, with the divider visible between them
+  - top bar indicators and bottom bar readouts share font family and size with
+    their labels

@@ -7,7 +7,7 @@ The handoff document. Refresh this file rather than starting a new one.
 | Updated | 2026-09-06 |
 | Branch | `main`, clean, pushed |
 | HEAD | `d704bee` + this session's hardware run |
-| Remote | `origin` = `git@gitea-local:gusta/ctrl-lab` — **changed**, see Loose ends |
+| Remote | `origin` pushes to **both** `gitea-local` and `github` — see below |
 | Tests | 59 passing (`bun run backend:test`) |
 | Branches / stashes / tags | none besides `main` |
 | Untracked | `Open.ps1` only — a personal 2-line launcher, superseded by `bun run tauri:dev` |
@@ -295,6 +295,18 @@ time to rediscover.
   drive. `console.py` sets it. The loss is reduced, not eliminated, so
   `grade-trace.py` matches rows by time rather than position and skips damaged
   ones. **[V]**
+- ~~**Which remote is authoritative.**~~ **Settled: both are.** `origin` fetches
+  from `gitea-local` and fans out on push to `gitea-local` *and*
+  `git@github.com:gustavosousa2208/ctrl-lab.git`, so one `git push` reaches
+  both; GitHub is the backup for when the local Gitea is down. A named `github`
+  remote also exists for fetching it on its own. Set up 2026-09-06, at which
+  point GitHub was 7 commits behind. **[V]**
+
+  ```bash
+  git remote -v          # origin should list two push URLs
+  git push origin main   # goes to both
+  ```
+
 - **There are two checkouts on the Mac, and they disagree.** Work happens in
   `~/source/ctrl-lab` (this one, `origin` = `git@gitea-local:gusta/ctrl-lab`).
   `~/ctrl-lab` is an older clone at `7585ca9`, clean, pointing at
@@ -314,9 +326,11 @@ time to rediscover.
   the only committed change in the project with no verification behind it.
 - **`Open.ps1` is untracked.** Personal launcher, redundant with
   `bun run tauri:dev`. Commit it or delete it; nothing depends on it.
-- **`frontend/PLAN.md`** is a scratch checklist with all items done. Superseded
-  by the Beads backlog, kept because it documents a frontend working
-  convention. Tracked as `ctrl-lab-5yl`.
+- ~~**`frontend/PLAN.md`**~~ **Deleted** 2026-09-06. All three of its checked
+  items were already durable invariants in `frontend/AGENTS.md`; the two missing
+  from that file's *verification* list were added there first, so nothing was
+  lost. There was nothing to migrate to Beads — the tasks were done and the
+  knowledge already had a home.
 - **The Zephyr workspace on the Mac is shared work infrastructure** (Atletec
   EPTS) carrying 10 uncommitted patches in its `zephyr` tree. A snapshot is saved
   outside the tree at `~/zephyrproject/.local-patches/`. **Do not run
