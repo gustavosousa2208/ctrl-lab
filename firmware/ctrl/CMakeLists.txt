@@ -97,6 +97,30 @@ if(CTRL_TRACE_TEXT)
   message(STATUS "ctrl: trace emitted as hex text")
 endif()
 
+# Run steps back to back instead of on the plan's tick:
+#   west build ... -- -DCTRL_FREE_RUN=y
+#
+# Every measurement taken before the timer existed was in this mode, and it is
+# still the quick way to check the numbers: fixture 04 at its real 50 ms tick
+# takes 25 s to run, against under a second free-running. It is not a control
+# loop and does not pretend to be.
+# Override the scheduling period, in nanoseconds:
+#   west build ... -- -DCTRL_TICK_NS=10000
+#
+# Drives the loop at a rate other than the plan's own, which is how the
+# missed-deadline path gets exercised: set a period shorter than a step and the
+# overrun counter has to notice. The model's arithmetic is untouched, so the
+# trace must still match the reference bit-for-bit.
+if(CTRL_TICK_NS)
+  target_compile_definitions(app PRIVATE CTRL_TICK_NS=${CTRL_TICK_NS}ULL)
+  message(STATUS "ctrl: tick overridden to ${CTRL_TICK_NS} ns")
+endif()
+
+if(CTRL_FREE_RUN)
+  target_compile_definitions(app PRIVATE CTRL_FREE_RUN=1)
+  message(STATUS "ctrl: free-running, no timer")
+endif()
+
 if(CTRL_IRQ_LOCK)
   target_compile_definitions(app PRIVATE CTRL_IRQ_LOCK=1)
   message(STATUS "ctrl: control step runs with interrupts locked")

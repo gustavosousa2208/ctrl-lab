@@ -26,12 +26,40 @@ shift 2
 
 DEST="$CTRL_LAB_BUILD/$APP/$BOARD${VARIANT:+-$VARIANT}"
 
-EXTRA=()
+# west takes `<west args> -- <cmake args>`, with exactly ONE separator. The
+# caller may already have passed a `--`, and EXTRA_CONF adds a CMake argument of
+# its own, so the two have to be merged rather than concatenated: appending a
+# second `-- -DEXTRA_CONF_FILE=...` produced a command line where CMake silently
+# ignored everything after the stray separator, and the build came out with
+# neither the fragment nor the caller's defines applied.
+WEST_ARGS=()
+CMAKE_ARGS=()
+SEEN_SEP=0
+for arg in "$@"; do
+    if [ "$arg" = "--" ] && [ "$SEEN_SEP" -eq 0 ]; then
+        SEEN_SEP=1
+        continue
+    fi
+    if [ "$SEEN_SEP" -eq 1 ]; then
+        CMAKE_ARGS+=("$arg")
+    else
+        WEST_ARGS+=("$arg")
+    fi
+done
+
 if [ -n "$EXTRA_CONF" ]; then
-    EXTRA=(-- "-DEXTRA_CONF_FILE=$EXTRA_CONF")
+    CMAKE_ARGS+=("-DEXTRA_CONF_FILE=$EXTRA_CONF")
 fi
 
-"$WEST" build -b "$BOARD" -d "$DEST" "$CTRL_LAB_SRC/firmware/$APP" "$@" "${EXTRA[@]}"
+SEP=()
+if [ ${#CMAKE_ARGS[@]} -gt 0 ]; then
+    SEP=(--)
+fi
+
+"$WEST" build -b "$BOARD" -d "$DEST" "$CTRL_LAB_SRC/firmware/$APP" \
+    ${WEST_ARGS[@]+"${WEST_ARGS[@]}"} \
+    ${SEP[@]+"${SEP[@]}"} \
+    ${CMAKE_ARGS[@]+"${CMAKE_ARGS[@]}"}
 
 echo
 echo "=== artifacts ==="

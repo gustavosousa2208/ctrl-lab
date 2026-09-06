@@ -182,6 +182,24 @@ Three results came out of the run, each closing something that was open:
    It is per-board and per-plan, so what the backend still needs is a policy
    rather than a constant.
 
+### Then it ran on a clock
+
+The loop is timer-driven now, and two measurement traps cost real time getting
+there — both recorded in [`firmware/ctrl/README.md`](firmware/ctrl/README.md).
+**DWT CYCCNT stops while the core sleeps in WFI**, so it measured a 50 ms period
+as ~11 900 cycles (that is the *awake* time, not the period); tick timing now
+uses `k_cycle_get_32()`. And **`k_timer` rounds a requested period up to a whole
+kernel tick**, so an earlier sweep of 80/60/50/40 us measured the same 100 us
+four times while reporting >100% CPU load, because load was divided by the
+requested period rather than the delivered one. Both are fixed in the firmware.
+
+The result that matters most is what happens when it *cannot* keep up: at a
+20 us period the loop missed 3002 deadlines and delivered 140 us instead, and
+the trace was **still bit-for-bit identical**. The scheduler drops ticks, not
+steps — so overload silently changes the sampled-data model while the arithmetic
+stays perfect. That is the failure this project exists to catch, and it is why
+the deadline counter is not decoration. **[V]**
+
 ## Hardware
 
 **Settled: the NUCLEO-F767ZI** (`nucleo_f767zi`), on the desk and running.
@@ -233,6 +251,8 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 | Build the runtime | `bash firmware/scripts/build.sh ctrl nucleo_f767zi -p always` | **[V]** warning-free, 30 KB flash / 75 KB RAM / 384 B DTCM |
 | Flash it (macOS) | `bash firmware/scripts/flash.sh ctrl` | **[V]** |
 | Read the console (macOS) | `python3 firmware/scripts/console.py --out run.txt` | resets, then reads **[V]** |
+| Timer rate sweep | `VARIANT=f40 EXTRA_CONF=fast-tick.conf bash firmware/scripts/build.sh ctrl nucleo_f767zi -p always -- -DCTRL_TICK_NS=40000` | **[V]** 5 deadlines missed of 501 |
+| Free-running (fast) | `bash firmware/scripts/build.sh ctrl nucleo_f767zi -p always -- -DCTRL_FREE_RUN=y` | **[V]** same digest, <1 s |
 | Grade a device run | `python3 firmware/scripts/grade-trace.py test-projects/04-2nd-order-system.f32.csv run.txt --expect-digest 0xfddb22c1a9525b2c` | **[V]** PASS - bit-for-bit |
 | Host harness, hex text | `./firmware/ctrl/host/ctrl-host --text <plan.dcp> <steps>` | **[V]** |
 | Host harness | `bash firmware/ctrl/host/build.sh` | **[V]** |
@@ -345,21 +365,29 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 Ordered. Stage D is closed and the board is on the Mac, so nothing here is
 blocked on hardware access or on a machine switch.
 
-1. **Drive the step from a hardware timer.** This is what turns a runtime into
-   a control loop, and it is the last structural piece of stage D. The budget it
-   must fit is measured: 3992 cycles (18.5 us) worst-case uninterrupted, plus
-   ~3930 for an ISR intrusion. At 1 kHz that is under 4% of the period.
+1. ~~Drive the step from a hardware timer.~~ **Done and measured.** The step
+   runs on the plan's own `base_ts_ns` in a cooperative thread woken by the
+   timer ISR. On fixture 04's 50 ms tick: **78 ns of jitter peak-to-peak, 0.11%
+   CPU, 0 deadlines missed of 501**, trace still bit-for-bit. The design tops
+   out near **16-20 kHz**, limited by ~8300 cycles of scheduling overhead per
+   tick rather than by the 18.9 us step. Full tables in
+   [`firmware/ctrl/README.md`](firmware/ctrl/README.md). **[V]**
 2. **Decide what the backend stamps into `wcet_estimate_ns`.** The number now
    exists but it is per-board and per-plan, so this needs a policy — probably a
    measured per-kernel cost table summed over a plan's blocks, with a margin.
    Until then the loader's WCET rejection is written but vacuous.
-3. **Stage E**: inter-MCU transport and `io_bindings`. The plan is currently
+3. **Consider running the step in the timer ISR.** Of 12 343 awake cycles per
+   tick only 4081 are the step; the rest is timer ISR, semaphore and two context
+   switches. Reclaiming it needs care — FP in an ISR is only safe with
+   `CONFIG_FPU_SHARING`, which is already on — and it is what would move the
+   ceiling above 20 kHz. Not needed at 1 kHz, where load is 5.7%.
+4. **Stage E**: inter-MCU transport and `io_bindings`. The plan is currently
    linked into the firmware; receiving one over a wire is the next unknown, and
    `io_bind[]` is what a source/sink block needs in order to reach a pin.
-4. **Run the `frontend/AGENTS.md` manual checklist** against `bfaa9c6`. Still
+5. **Run the `frontend/AGENTS.md` manual checklist** against `bfaa9c6`. Still
    the only committed change in the project with no verification behind it, and
    the Mac has a GUI.
-5. Loose ends worth an hour: the duplicate `~/ctrl-lab` checkout and its stale
+6. Loose ends worth an hour: the duplicate `~/ctrl-lab` checkout and its stale
    Vite server, and the `origin` remote question. Then the `TODO.md` backlog.
 
 ## History

@@ -16,7 +16,7 @@ This file is about what exists and how to run it.
 | Bit-exact vs. the f32 reference | **verified on hardware, all four fixtures** |
 | Built for `nucleo_f767zi` | **[V]** warning-free, on macOS and WSL |
 | Run on the board | **[V]** NUCLEO-F767ZI, 2026-09-06 |
-| Driven by a hardware timer | no. Steps run back to back; see below |
+| Driven by a hardware timer | **[V]** yes, from the plan's own `base_ts_ns` |
 
 ## What the board says
 
@@ -118,6 +118,87 @@ rather than by position** (a dropped row must not shift every comparison after
 it), counts and skips damaged rows, and lets the digest decide the verdict. That
 is worth keeping now that the link is clean: the next transport is a wire
 between two MCUs, and it will not be.
+
+### It runs on a clock now
+
+The step is driven by the plan's own `base_ts_ns`, not by the top of a loop.
+Fixture 04 says 50 ms, so a 501-step run takes 25.87 s of wall clock — which is
+the point. **[V]**
+
+| | |
+| --- | --- |
+| tick period | min 10 800 000, mean 10 800 000, max 10 800 017 cycles (nominal 10 800 000) |
+| tick jitter | **17 cycles peak-to-peak = 78 ns** on a 50 ms period |
+| step | 4081 cycles, 18.9 us |
+| awake per tick | 12 343 cycles |
+| CPU load | **0.11%** |
+| deadlines missed | **0 of 501** |
+| trace | bit-for-bit, digest unchanged |
+
+**The step runs in a cooperative thread woken by the timer ISR, not in the ISR
+itself.** Floating point in an ISR needs `CONFIG_FPU_SHARING`, because without
+it the callee-saved FP registers `s16-s31` are not preserved and an ISR doing FP
+silently corrupts the interrupted thread — Cortex-M lazy stacking covers only
+`s0-s15`. A thread sidesteps the question, and it is the shape `../AGENTS.md`
+asks for. `CONFIG_FPU_SHARING=y` is set regardless, because `main()` and the
+control thread both touch floats.
+
+The cost of that choice is visible: of the 12 343 awake cycles per tick, only
+4081 are the step. **The remaining ~8300 cycles (38 us) are scheduling** — timer
+ISR, semaphore, two context switches, and the tickless SysTick reprogramming.
+Running the step directly in the ISR would reclaim most of it, at the price of
+the FP hazard above. Worth revisiting if the rate ever needs to go high.
+
+### How fast it can actually go
+
+Measured by overriding the period with `-DCTRL_TICK_NS`, on the 100 kHz kernel
+tick that `fast-tick.conf` provides. **[V]**
+
+| requested | delivered | CPU load | deadlines missed |
+| --- | --- | --- | --- |
+| 1 ms | 1 ms | 5.7% | 0 / 501 |
+| 200 us | 200 us | 28.4% | 0 / 501 |
+| 100 us | 100 us | 56.8% | 0 / 501 |
+| 60 us | 60.0 us | 94.2% | 0 / 501 |
+| 50 us | 50.0 us | 101.1% | 0 / 501 |
+| 40 us | 40.4 us | 101.5% | **5** |
+| 30 us | 46.0 us | 102.2% | **267** |
+| 20 us | 140.1 us | 104.0% | **3002** |
+| 10 us | — | — | livelocks before printing |
+
+So this design tops out around **16-20 kHz**, and the limit is scheduling
+overhead rather than the control step, which is only 18.9 us of a ~57 us budget.
+Two things to read off the table:
+
+- **Overload stretches the delivered period.** Past 50 us the loop cannot keep
+  up and the effective period grows — 20 us requested arrives as 140 us. The
+  requested rate stops being the real one, which is why `cpu_load` is computed
+  against the *measured* period.
+- **Overload degrades timing, not correctness.** The 20 us run missed 3002
+  deadlines and ran 7x slower than asked, and its trace was still **bit-for-bit
+  identical**. The scheduler drops *ticks*, not *steps*: each step still runs
+  once, in order, on the state the previous one left. A control engineer should
+  read that as the sampled-data model being wrong while the arithmetic stays
+  right — the worst kind of failure to have in the field, and exactly why the
+  deadline counter exists. **[V]**
+
+### Two measurement traps this cost, both worth knowing
+
+**DWT CYCCNT stops while the core sleeps.** Between ticks the idle thread
+executes WFI, which gates the core clock, so the DWT-backed timing API simply
+stops counting. Measuring a 50 ms period with it reported ~11 900 cycles — which
+is not the period at all, it is the time the CPU was *awake*. Tick period now
+uses `k_cycle_get_32()`, driven by the system timer, which keeps running across
+idle. Both numbers are kept because they answer different questions: awake
+cycles are the CPU cost, `k_cycle_get_32` is the period.
+
+**`k_timer` rounds a requested period up to a whole kernel tick.** At the
+default 10 kHz that makes 100 us the shortest period expressible, and every
+request below it silently becomes 100 us. An earlier sweep of 80/60/50/40 us
+therefore measured the same 100 us four times while reporting CPU loads above
+100%, because load was being computed against the *requested* period. The
+firmware now divides by the measured period and prints a note when the two
+disagree.
 
 ### The trace is a binary frame
 
@@ -254,7 +335,13 @@ exists. **[V]**
 
 Build options: `-DCTRL_PLAN=<fixture>` picks what to run and grade against;
 `-DCTRL_CONSOLE_BAUD=<rate>` overrides the 921600 default;
-`-DCTRL_TRACE_TEXT=y` emits hex rows instead of a binary frame; and
+`-DCTRL_TRACE_TEXT=y` emits hex rows instead of a binary frame;
+`-DCTRL_FREE_RUN=y` runs steps back to back with no timer (how every
+pre-timer measurement was taken, and still the quick way to check the numbers:
+under a second against 25.87 s);
+`-DCTRL_TICK_NS=<n>` overrides the scheduling period only, leaving the model's
+arithmetic alone, which is how the rate table above was measured — pair it with
+`EXTRA_CONF=fast-tick.conf` for periods under 100 us; and
 `-DCTRL_IRQ_LOCK=y` runs each step inside `irq_lock()`, an attribution tool for
 the timing question above rather than a default.
 
@@ -285,10 +372,8 @@ result only ever covered a DTCM-resident working set.
 
 ## What is not here yet
 
-- **No hardware timer.** Steps run back to back. Stage D asked whether the
-  numbers are right and what a step costs; both are now answered, so the timer
-  is the next thing. The budget it has to fit: 3992 cycles worst-case
-  uninterrupted, plus ~3930 for an ISR intrusion.
+- ~~**No hardware timer.**~~ Done — see "It runs on a clock now" above.
+  `-DCTRL_FREE_RUN=y` keeps the old back-to-back loop for quick checks.
 - **No transport.** The plan is linked in, not received. That is stage E, and
   keeping it out means a wrong number here has exactly one possible cause.
 - **No I/O bindings.** The format carries the section, the backend emits it

@@ -187,3 +187,30 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+## Project continuity
+
+The conversation is not the source of truth for project state. Git stores
+implementation state, Beads stores operational work state, and project
+documentation stores durable technical knowledge.
+
+At the beginning of work, determine the logical workspace root, run `bd prime`,
+inspect the single `in_progress` task and its notes, and inspect `git status` and
+the relevant diff. Continue that task unless the user explicitly requests
+something else.
+
+During meaningful work, keep the active Bead current. Record important
+discoveries, failed approaches worth avoiding, blockers, tests and results, and
+the exact next step.
+
+When the user says `checkpoint`, inspect current changes and update the active
+Bead with what works, what fails, important tests and discoveries, unresolved
+problems, and the exact next step. Leave unfinished work `in_progress`; close it
+only when it is actually complete.
+
+When the user says `continue`, run `bd prime`, inspect the current
+`in_progress` task and relevant Git state, reconstruct the project state from
+those durable sources, and continue from the recorded next step. If no task is
+active, inspect `bd ready` and report available work rather than inventing one.
+
+Never discard existing uncommitted work without inspecting it first.

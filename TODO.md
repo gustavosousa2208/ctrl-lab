@@ -43,7 +43,8 @@ is blocked on hardware access. Current state and context:
 
 ### Stage D leftovers
 
-- **Firmware: drive the step from a hardware timer.** The last structural piece of stage D. Budget is measured: 3992 cycles (18.5 us) worst-case uninterrupted, plus ~3930 for an ISR intrusion — under 4% of a 1 kHz period.
+- ~~**Firmware: drive the step from a hardware timer.**~~ **Done.** Runs on the plan's `base_ts_ns` in a cooperative thread woken by the timer ISR. 78 ns jitter, 0.11% CPU, 0 deadlines missed on fixture 04's 50 ms tick, trace still bit-for-bit. Ceiling is ~16-20 kHz, limited by ~8300 cycles/tick of scheduling overhead rather than the 18.9 us step.
+- Firmware: consider moving the step into the timer ISR. Only 4081 of 12343 awake cycles per tick are the step; the rest is ISR + semaphore + two context switches. That is what would push past 20 kHz. Not needed at 1 kHz (5.7% load). `CONFIG_FPU_SHARING` is already on, which is the precondition.
 - Backend: decide what to stamp into `wcet_estimate_ns`. The number exists now, but it is per-board and per-plan, so this needs a policy (per-kernel cost table summed over a plan, plus margin), not a constant.
 - Validation: document the exact RST equation form the project will use. Note that stage C established a PID needs no new kernel — a discrete PID *is* a second-order discrete transfer function, which the existing kernel already runs.
 

@@ -20,6 +20,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/uart.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/timing/timing.h>
 
@@ -97,6 +98,194 @@ static bool integrity_self_test(void)
 	return crc_ok && fnv_ok;
 }
 
+/* One control step, recorded and timed. Shared by both run modes so the thing
+ * being measured is identical whether the tick comes from a timer or from the
+ * top of a loop.
+ *
+ * The reference records the time BEFORE the step and the signals AFTER it
+ * (exec.rs `run`), so row k is (k*ts, result of step k).
+ */
+static bool run_one_step(uint32_t k)
+{
+	const float *signals = ctrl_signals();
+
+	trace_times[k] = ctrl_time(&runtime);
+
+	/* Not const: timing_cycles_get() takes non-const pointers. */
+#ifdef CTRL_IRQ_LOCK
+	const unsigned int key = irq_lock();
+#endif
+	timing_t start = timing_counter_get();
+	const bool ok = ctrl_step(&runtime);
+	timing_t end = timing_counter_get();
+#ifdef CTRL_IRQ_LOCK
+	irq_unlock(key);
+#endif
+
+	step_cycles[k] = (uint32_t)timing_cycles_get(&start, &end);
+
+	if (!ok) {
+		printk("FAIL: fault at step %u, block %u: %s\n", k, runtime.fault_block,
+		       ctrl_kernel_fault_str(runtime.fault));
+		return false;
+	}
+
+	for (uint32_t slot = 0; slot < plan.signal_count; slot++) {
+		trace_signals[k][slot] = signals[slot];
+	}
+	return true;
+}
+
+#ifdef CTRL_FREE_RUN
+
+/* Steps back to back, as fast as the core manages. Not a control loop - this is
+ * the mode every measurement before the timer landed was taken in, kept because
+ * it answers "are the numbers right" in a second rather than in real time
+ * (fixture 04 at its real 50 ms tick takes 25 s).
+ */
+static uint32_t run_plan(void)
+{
+	for (uint32_t k = 0; k < CTRL_PLAN_STEPS; k++) {
+		if (!run_one_step(k)) {
+			return k;
+		}
+	}
+	return CTRL_PLAN_STEPS;
+}
+
+#else
+
+/* Timer-driven: the plan's own base_ts_ns becomes the tick.
+ *
+ * The step runs in a dedicated cooperative thread woken by the timer, not in
+ * the timer ISR itself. Two reasons, and the first is a correctness one:
+ *
+ *   - Floating point in an ISR needs CONFIG_FPU_SHARING, because without it the
+ *     callee-saved FP registers (s16-s31) are not preserved and an ISR doing FP
+ *     silently corrupts the interrupted thread's context. Cortex-M lazy stacking
+ *     covers only s0-s15. A thread sidesteps the whole question.
+ *   - firmware/AGENTS.md lists "high-priority Zephyr thread / ISR-triggered
+ *     work" as the intended shape, and a cooperative priority means nothing
+ *     short of an interrupt can preempt the step.
+ *
+ * The cost is one context switch of latency per tick, which is itself worth
+ * measuring rather than assuming - the tick-to-tick figures below include it.
+ */
+#define CTRL_THREAD_STACK_SIZE 2048
+
+K_THREAD_STACK_DEFINE(ctrl_thread_stack, CTRL_THREAD_STACK_SIZE);
+static struct k_thread ctrl_thread;
+static struct k_timer tick_timer;
+static K_SEM_DEFINE(tick_signal, 0, 1);
+static K_SEM_DEFINE(run_complete, 0, 1);
+
+/* Ticks raised by the ISR, and ticks the thread actually serviced. They diverge
+ * only if a step overran its period, which is the definition of a missed
+ * deadline - so the difference is the measurement, not a bookkeeping detail.
+ */
+static atomic_t ticks_raised;
+static uint32_t ticks_missed;
+static uint32_t completed_steps;
+static uint32_t tick_deltas[CTRL_PLAN_STEPS];
+static uint32_t awake_deltas[CTRL_PLAN_STEPS];
+
+static void tick_isr(struct k_timer *timer)
+{
+	ARG_UNUSED(timer);
+	atomic_inc(&ticks_raised);
+	k_sem_give(&tick_signal);
+}
+
+static void control_thread(void *a, void *b, void *c)
+{
+	ARG_UNUSED(a);
+	ARG_UNUSED(b);
+	ARG_UNUSED(c);
+
+	uint32_t previous = k_cycle_get_32();
+	timing_t previous_awake = timing_counter_get();
+	uint32_t serviced = 0;
+
+	while (completed_steps < CTRL_PLAN_STEPS) {
+		k_sem_take(&tick_signal, K_FOREVER);
+
+		/* The semaphore saturates at 1, so a tick raised while the
+		 * previous step was still running is lost rather than queued.
+		 * Comparing the ISR's count against our own is what makes that
+		 * visible instead of silent.
+		 */
+		timing_t now_awake = timing_counter_get();
+		const uint32_t raised = (uint32_t)atomic_get(&ticks_raised);
+
+		serviced++;
+		if (raised > serviced) {
+			ticks_missed += raised - serviced;
+			serviced = raised;
+		}
+
+		/* k_cycle_get_32(), NOT the DWT-backed timing API used for the step.
+		 *
+		 * Between ticks the core has nothing to run and Zephyr's idle thread
+		 * executes WFI, which gates the core clock - and DWT CYCCNT counts
+		 * core clock cycles, so it simply stops. Measuring the tick period
+		 * with it reported ~11 900 cycles for a 50 ms period, which is not
+		 * the period at all: it is the time the CPU was *awake*. The kernel
+		 * cycle counter is driven by the system timer and keeps running
+		 * across idle, so it can see the sleep.
+		 *
+		 * Both numbers are wanted, and they answer different questions:
+		 * awake-cycles-per-tick is the CPU cost, this is the period.
+		 */
+		const uint32_t now = k_cycle_get_32();
+
+		tick_deltas[completed_steps] = now - previous;
+		awake_deltas[completed_steps] = (uint32_t)timing_cycles_get(&previous_awake, &now_awake);
+		previous = now;
+		previous_awake = now_awake;
+
+		if (!run_one_step(completed_steps)) {
+			break;
+		}
+		completed_steps++;
+	}
+
+	k_timer_stop(&tick_timer);
+	k_sem_give(&run_complete);
+}
+
+static uint32_t run_plan(void)
+{
+	k_timer_init(&tick_timer, tick_isr, NULL);
+
+	k_thread_create(&ctrl_thread, ctrl_thread_stack, CTRL_THREAD_STACK_SIZE, control_thread,
+			NULL, NULL, NULL, K_PRIO_COOP(0), 0, K_NO_WAIT);
+	k_thread_name_set(&ctrl_thread, "control");
+
+	/* CTRL_TICK_NS overrides the scheduling period ONLY. runtime.ts still comes
+	 * from the plan, so the arithmetic is unchanged and the trace still has to
+	 * match the reference - this drives the loop faster or slower than the model
+	 * it is executing, which is exactly what is wanted to exercise the
+	 * missed-deadline path.
+	 */
+#ifdef CTRL_TICK_NS
+	const uint64_t tick_ns = CTRL_TICK_NS;
+
+	printk("tick        %u ns (OVERRIDDEN; plan says %u ns), timer-driven\n",
+	       (uint32_t)tick_ns, (uint32_t)plan.base_ts_ns);
+#else
+	const uint64_t tick_ns = plan.base_ts_ns;
+
+	printk("tick        %u ns from the plan, timer-driven\n", (uint32_t)tick_ns);
+#endif
+
+	k_timer_start(&tick_timer, K_NSEC(tick_ns), K_NSEC(tick_ns));
+	k_sem_take(&run_complete, K_FOREVER);
+
+	return completed_steps;
+}
+
+#endif /* CTRL_FREE_RUN */
+
 int main(void)
 {
 	printk("\nctrl-lab control runtime (stage D)\n");
@@ -106,6 +295,8 @@ int main(void)
 	printk("core %u Hz, kernel ticks %u Hz, irq_lock=%d\n",
 	       sys_clock_hw_cycles_per_sec(), CONFIG_SYS_CLOCK_TICKS_PER_SEC,
 	       IS_ENABLED(CTRL_IRQ_LOCK));
+	printk("run mode    %s\n",
+	       IS_ENABLED(CTRL_FREE_RUN) ? "free-running (no timer)" : "timer-driven");
 
 	printk("signal_pool @ %p  %s\n", ctrl_signal_pool_addr(),
 	       is_in_dtcm(ctrl_signal_pool_addr()) ? "in DTCM" : "*** NOT IN DTCM ***");
@@ -147,43 +338,7 @@ int main(void)
 
 	ctrl_arm(&runtime, &plan);
 
-	const float *signals = ctrl_signals();
-	uint32_t completed = 0;
-
-	/* The reference records the time BEFORE the step and the signals AFTER it
-	 * (exec.rs `run`). Row k is (k*ts, result of step k).
-	 *
-	 * Printing happens after the loop, not inside it: the console is a 115200
-	 * baud UART and interleaving it with the measurement would time the
-	 * console rather than the control step.
-	 */
-	for (uint32_t k = 0; k < CTRL_PLAN_STEPS; k++) {
-		trace_times[k] = ctrl_time(&runtime);
-
-		/* Not const: timing_cycles_get() takes non-const pointers. */
-#ifdef CTRL_IRQ_LOCK
-		const unsigned int key = irq_lock();
-#endif
-		timing_t start = timing_counter_get();
-		const bool ok = ctrl_step(&runtime);
-		timing_t end = timing_counter_get();
-#ifdef CTRL_IRQ_LOCK
-		irq_unlock(key);
-#endif
-
-		step_cycles[k] = (uint32_t)timing_cycles_get(&start, &end);
-
-		if (!ok) {
-			printk("FAIL: fault at step %u, block %u: %s\n", k, runtime.fault_block,
-			       ctrl_kernel_fault_str(runtime.fault));
-			break;
-		}
-
-		for (uint32_t slot = 0; slot < plan.signal_count; slot++) {
-			trace_signals[k][slot] = signals[slot];
-		}
-		completed++;
-	}
+	const uint32_t completed = run_plan();
 
 	uint64_t digest;
 
@@ -276,6 +431,76 @@ int main(void)
 		       steady_worst ? (steady_worst - best) * 100U / steady_worst : 0U);
 		printk("outliers    %u of %u steps took >1.5x the fastest step\n", outliers,
 		       completed - 1);
+
+#ifndef CTRL_FREE_RUN
+		/* Tick-to-tick, which is a different question from step cost: it
+		 * measures when the step STARTED, so it includes timer accuracy
+		 * and the wake-up latency of the control thread. This is the
+		 * jitter figure the project commits to reporting.
+		 */
+#ifdef CTRL_TICK_NS
+		const uint64_t nominal_ns = CTRL_TICK_NS;
+#else
+		const uint64_t nominal_ns = plan.base_ts_ns;
+#endif
+		const uint32_t expected = (uint32_t)(nominal_ns * hz / 1000000000U);
+		uint32_t tick_best = UINT32_MAX;
+		uint32_t tick_worst = 0;
+		uint64_t tick_total = 0;
+
+		/* Skip index 0: its "previous" timestamp is from before the timer
+		 * started, so the first delta measures start-up, not a period.
+		 */
+		uint64_t awake_total = 0;
+		uint32_t awake_worst = 0;
+
+		for (uint32_t k = 1; k < completed; k++) {
+			tick_best = MIN(tick_best, tick_deltas[k]);
+			tick_worst = MAX(tick_worst, tick_deltas[k]);
+			tick_total += tick_deltas[k];
+			awake_worst = MAX(awake_worst, awake_deltas[k]);
+			awake_total += awake_deltas[k];
+		}
+
+		if (completed > 1) {
+			const uint32_t tick_mean = (uint32_t)(tick_total / (completed - 1));
+			const uint32_t awake_mean = (uint32_t)(awake_total / (completed - 1));
+
+			printk("tick_period min=%u mean=%u max=%u expected=%u cycles\n", tick_best,
+			       tick_mean, tick_worst, expected);
+			printk("tick_jitter %u cycles p-p (%u ns), mean is %d cycles off nominal\n",
+			       tick_worst - tick_best,
+			       (uint32_t)((uint64_t)(tick_worst - tick_best) * 1000000000U / hz),
+			       (int32_t)(tick_mean - expected));
+
+			/* Awake cycles per tick: the step plus the timer ISR, the
+			 * semaphore and two context switches. The difference between
+			 * this and the step alone is what the scheduling costs.
+			 */
+			printk("cpu_awake   mean=%u max=%u cycles per tick (step is %u of that)\n",
+			       awake_mean, awake_worst, mean);
+			/* Against the MEASURED period, not the requested one.
+			 *
+			 * k_timer resolution is one kernel tick, so a requested
+			 * period is rounded UP to a whole tick - at the default
+			 * 10 kHz, anything under 100 us silently becomes 100 us.
+			 * Dividing by the request rather than the reality reports
+			 * loads above 100% for a loop that is comfortably idle,
+			 * which is exactly what it did before this line changed.
+			 */
+			printk("cpu_load    %u.%02u%% of the measured period is spent awake\n",
+			       tick_mean ? awake_mean * 100U / tick_mean : 0U,
+			       tick_mean ? (uint32_t)((uint64_t)awake_mean * 10000U / tick_mean) % 100U
+					 : 0U);
+			if (tick_mean > expected + expected / 100U) {
+				printk("NOTE        requested %u ns but the timer delivered %u ns"
+				       " - k_timer rounds up to a whole kernel tick\n",
+				       (uint32_t)nominal_ns,
+				       (uint32_t)((uint64_t)tick_mean * 1000000000U / hz));
+			}
+		}
+		printk("deadlines   %u missed of %u ticks\n", ticks_missed, completed);
+#endif
 		printk("step_ns     min=%u mean=%u max=%u\n",
 		       (uint32_t)((uint64_t)best * 1000000000U / hz),
 		       (uint32_t)((uint64_t)mean * 1000000000U / hz),
