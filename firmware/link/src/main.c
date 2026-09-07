@@ -34,6 +34,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/sys/printk.h>
+#include <string.h>
 #include <zephyr/timing/timing.h>
 
 #include "dcp.h"
@@ -87,25 +88,47 @@ static uint8_t frame[FRAME_BYTES];
  * failed CRC while single-byte pings at 6 Mbaud were flawless. Measured.
  */
 #ifdef LINK_RESPONDER
-static bool link_recv(uint8_t *out, uint32_t len, uint32_t deadline)
+static uint32_t cycles_per_ms;
+
+/* Bulk receive that does NO timing work until a byte is actually late.
+ *
+ * Every boundary in this protocol turned out to be a place where a few hundred
+ * cycles of bookkeeping loses a byte, because the STM32 receive register holds
+ * exactly one and the sender never pauses. It cost four rounds to learn:
+ *
+ *   - a bitwise CRC between payload and trailer lost 11 of 12 trailer bytes
+ *   - a 24-byte header CRC before the payload lost 1
+ *   - and building a deadline (which called sys_clock_hw_cycles_per_sec) after
+ *     reading the 'F' command lost the first header byte, which shifted the
+ *     whole frame by one and showed up as "header 32/32 (crc bad),
+ *     trailer 11/12"
+ *
+ * So the deadline is armed lazily: nothing is computed while bytes are
+ * arriving, and the clock is only read once a poll comes back empty. The fast
+ * path is uart_poll_in and nothing else.
+ */
+static uint32_t link_recv(uint8_t *out, uint32_t len, uint32_t timeout_ms)
 {
 	uint32_t got = 0;
+	uint32_t deadline = 0;
+	bool armed = false;
 
 	while (got < len) {
 		if (uart_poll_in(link, &out[got]) == 0) {
 			got++;
+			armed = false;
+			continue;
+		}
+		if (!armed) {
+			deadline = k_cycle_get_32() + timeout_ms * cycles_per_ms;
+			armed = true;
 			continue;
 		}
 		if ((int32_t)(k_cycle_get_32() - deadline) >= 0) {
-			return false;
+			break;
 		}
 	}
-	return true;
-}
-
-static uint32_t link_deadline(uint32_t ms)
-{
-	return k_cycle_get_32() + ms * (sys_clock_hw_cycles_per_sec() / 1000U);
+	return got;
 }
 #endif /* LINK_RESPONDER */
 
@@ -201,7 +224,18 @@ int main(void)
 	timing_init();
 	timing_start();
 
+	/* Hoisted: reading this per call was itself enough to drop a byte. */
+	cycles_per_ms = sys_clock_hw_cycles_per_sec() / 1000U;
+
 	uint32_t pings = 0, frames = 0, bad = 0, last_payload = 0;
+
+	/* Where the last frame got to. Reported verbatim so a stall is located
+	 * rather than inferred: which phase, and how many bytes of what it
+	 * expected actually arrived.
+	 */
+	const char *phase = "none";
+	uint32_t hdr_got = 0, pay_got = 0, trl_got = 0, stray = 0;
+	bool hdr_crc_ok = false;
 	uint32_t turn_best = UINT32_MAX, turn_worst = 0;
 	uint64_t turn_total = 0;
 
@@ -211,6 +245,11 @@ int main(void)
 		uint8_t cmd;
 
 		if (uart_poll_in(link, &cmd) != 0) {
+			continue;
+		}
+
+		if (cmd != CMD_PING && cmd != CMD_FRAME && cmd != CMD_REPORT) {
+			stray++;
 			continue;
 		}
 
@@ -240,22 +279,105 @@ int main(void)
 			 * be CRC-checked before it is trusted as a length.
 			 */
 			uint8_t header[CTRL_TRACE_HEADER_LEN];
-			const uint32_t deadline = link_deadline(2000);
-			bool ok = link_recv(header, sizeof(header), deadline);
 
+			/* 200 ms, deliberately SHORTER than the initiator's wait
+			 * for our verdict.
+			 *
+			 * This is the bug that outlasted four fixes. The responder
+			 * used to wait 2000 ms for missing bytes while the
+			 * initiator gave up after 500 ms - so a single lost byte
+			 * desynchronised them permanently: the initiator moved on
+			 * and started the next phase while this side was still
+			 * blocked, and every subsequent run inherited the mess.
+			 * Whoever waits longer must be the one asking.
+			 */
+			/* Resynchronise on the magic instead of trusting stream
+			 * position.
+			 *
+			 * The frame carries "DCPT" precisely so a reader can find it
+			 * in a stream it does not otherwise understand, and not using
+			 * that made every failure self-perpetuating: a frame that
+			 * ended one byte short left a byte behind, the next run read
+			 * it as the start of its header, and the shift repeated for
+			 * ever. Failures went from intermittent to permanent and it
+			 * looked like a rate problem.
+			 *
+			 * Scanning costs nothing in the good case - the magic is the
+			 * first four bytes - and it makes a bad frame cost exactly
+			 * one frame instead of every frame after it.
+			 */
+			/* Interrupts off for the whole frame.
+			 *
+			 * The instrumentation narrowed the loss to mid-stream and
+			 * sporadic - trailer short by one to three bytes, varying
+			 * run to run - which a tight poll loop cannot cause on its
+			 * own at 10 us per byte. What can is the 10 kHz kernel tick
+			 * preempting it: the H743's ISR path is both expensive and
+			 * variable, which the E1 jitter work already measured
+			 * (5183 ns of tick jitter, and awake-time outliers).
+			 *
+			 * A ~40 ms lock is not something a control loop could do, but
+			 * this is a transport probe with nothing else to be late for,
+			 * and it isolates the cause. If it is the tick, the real fix
+			 * for stage E is DMA or the H7's USART FIFO, not a lock.
+			 */
+			const unsigned int key = irq_lock();
+
+			phase = "sync";
+			hdr_got = 0;
+			{
+				uint8_t window[4] = { 0, 0, 0, 0 };
+				uint32_t scanned = 0;
+
+				while (scanned < sizeof(frame)) {
+					uint8_t b;
+
+					if (link_recv(&b, 1, 200) != 1) {
+						break;
+					}
+					scanned++;
+					window[0] = window[1];
+					window[1] = window[2];
+					window[2] = window[3];
+					window[3] = b;
+					if (window[0] == 'D' && window[1] == 'C' &&
+					    window[2] == 'P' && window[3] == 'T') {
+						break;
+					}
+				}
+				if (window[0] == 'D' && window[3] == 'T') {
+					memcpy(header, window, 4);
+					hdr_got = 4 + link_recv(&header[4],
+							        sizeof(header) - 4, 200);
+				}
+			}
+			phase = "header";
+			pay_got = 0;
+			trl_got = 0;
+			hdr_crc_ok = false;
+
+			bool ok = (hdr_got == sizeof(header));
 			uint32_t payload_len = 0;
+			uint32_t want_hdr_crc = 0;
 
 			if (ok) {
+				/* Shifts only. The header CRC is deliberately NOT
+				 * checked here: it is 24 bytes of bitwise CRC, ~192
+				 * iterations, and at 1 Mbaud that is most of a byte
+				 * time - long enough to miss the first payload byte
+				 * while the stream keeps coming. The instrumentation
+				 * caught it as "trailer 11/12", one byte short.
+				 *
+				 * payload_len is still bounds-checked before it is
+				 * used as a length, which is the check that matters
+				 * for safety; the CRC then confirms it afterwards,
+				 * when nothing is in flight.
+				 */
 				for (int i = 0; i < 4; i++) {
 					payload_len |= (uint32_t)header[20 + i] << (8 * i);
+					want_hdr_crc |= (uint32_t)header[24 + i] << (8 * i);
 				}
-				uint32_t want = 0;
-
-				for (int i = 0; i < 4; i++) {
-					want |= (uint32_t)header[24 + i] << (8 * i);
-				}
-				ok = (ctrl_crc32(header, 24) == want) &&
-				     (payload_len + CTRL_TRACE_HEADER_LEN +
+				ok = (payload_len + CTRL_TRACE_HEADER_LEN +
 				      CTRL_TRACE_TRAILER_LEN <= sizeof(frame));
 			}
 
@@ -268,20 +390,39 @@ int main(void)
 			 * only verified at 1 Mbaud, and the higher rates fail for a
 			 * reason not yet found.
 			 */
-			if (ok) {
-				ok = link_recv(frame, payload_len, deadline);
-			}
-
+			/* Payload AND trailer in one receive, then CRC.
+			 *
+			 * They are one continuous stream and must be read as one.
+			 * Computing the CRC between them is what broke this: a
+			 * bitwise CRC over 4000 bytes is ~32000 loop iterations,
+			 * and at 1 Mbaud the 12 trailer bytes arrive during that
+			 * gap and land in a one-byte register that is not being
+			 * read. The instrumentation said it exactly - "payload
+			 * 4000/4000, trailer 1/12" - eleven bytes lost, which is
+			 * the whole trailer bar the one still sitting in the
+			 * register.
+			 *
+			 * The lesson generalises past this bug: on a polled link
+			 * there is no such thing as a safe pause between two parts
+			 * of the same transfer. Receive everything, then think.
+			 */
+			const uint32_t tail = payload_len + CTRL_TRACE_TRAILER_LEN;
 			uint32_t crc = CTRL_CRC32_INIT;
+			const uint8_t *trailer = &frame[payload_len];
 
 			if (ok) {
-				crc = ctrl_crc32_update(crc, frame, payload_len);
+				phase = "payload+trailer";
+				pay_got = link_recv(frame, tail, 200);
+				ok = (pay_got == tail);
+				trl_got = pay_got > payload_len ? pay_got - payload_len : 0;
+				pay_got = MIN(pay_got, payload_len);
 			}
 
-			uint8_t trailer[CTRL_TRACE_TRAILER_LEN];
-
 			if (ok) {
-				ok = link_recv(trailer, sizeof(trailer), deadline);
+				/* Everything is received; now it is safe to compute. */
+				hdr_crc_ok = (ctrl_crc32(header, 24) == want_hdr_crc);
+				crc = ctrl_crc32_update(crc, frame, payload_len);
+				ok = hdr_crc_ok;
 			}
 
 			uint32_t want_crc = 0;
@@ -297,8 +438,21 @@ int main(void)
 			if (!ok) {
 				bad++;
 			}
+			irq_unlock(key);
+
+			if (ok) {
+				phase = "complete";
+			}
 			uart_poll_out(link, ok ? RSP_CRC_OK : RSP_CRC_BAD);
 			last_payload = payload_len;
+
+			/* No drain here. An earlier version swallowed leftovers after
+			 * every frame and swallowed the initiator's CMD_REPORT with
+			 * them, so the far side went silent and the diagnostic that
+			 * exists to explain failures stopped being emitted. The magic
+			 * resync above already recovers from a desynchronised stream,
+			 * which is the job a drain was trying to do.
+			 */
 		} else if (cmd == CMD_REPORT) {
 			/* The ONLY place this side prints.
 			 *
@@ -316,6 +470,12 @@ int main(void)
 			 */
 			printk("frames %u (bad %u), last payload %u bytes\n", frames, bad,
 			       last_payload);
+			printk("last frame reached '%s': header %u/%u (crc %s), "
+			       "payload %u/%u, trailer %u/%u\n",
+			       phase, hdr_got, (uint32_t)CTRL_TRACE_HEADER_LEN,
+			       hdr_crc_ok ? "ok" : "bad", pay_got, last_payload, trl_got,
+			       (uint32_t)CTRL_TRACE_TRAILER_LEN);
+			printk("stray bytes (not P/F/R): %u\n", stray);
 			printk("pings %u, turnaround min=%u mean=%u max=%u cycles\n", pings,
 			       pings ? turn_best : 0,
 			       pings ? (uint32_t)(turn_total / pings) : 0, turn_worst);
@@ -413,11 +573,22 @@ int main(void)
 	link_put(frame, frame_len);
 
 	uint8_t verdict = 0;
+	/* 500 ms, comfortably longer than the responder's 200 ms deadline, so it
+	 * always answers before we give up on it.
+	 */
 	bool answered = link_get(&verdict, 500000);
 	timing_t f1 = timing_counter_get();
 
 	if (!answered) {
+		/* Ask anyway. A frame that never gets a verdict is exactly the
+		 * case where the far side's account of where it stalled is worth
+		 * having, and returning here is what hid it for three sweeps.
+		 */
 		printk("FAIL: responder never answered the frame\n");
+		k_msleep(300);
+		uart_poll_out(link, CMD_REPORT);
+		k_msleep(100);
+		printk("(asked the responder to report; read it on its console)\n");
 		return 0;
 	}
 
