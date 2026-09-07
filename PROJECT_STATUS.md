@@ -6,9 +6,10 @@ The handoff document. Refresh this file rather than starting a new one.
 | --- | --- |
 | Updated | 2026-09-06 |
 | Branch | `main`, clean, pushed |
-| HEAD | `d704bee` + this session's hardware run |
+| HEAD | `b664ad6`, pushed to both remotes |
 | Remote | `origin` pushes to **both** `gitea-local` and `github` — see below |
 | Tests | 59 passing (`bun run backend:test`) |
+| Work queue | **Beads** — `bd ready`. Not `TODO.md`, which is a pointer now |
 | Branches / stashes / tags | none besides `main` |
 | Untracked | `Open.ps1` only — a personal 2-line launcher, superseded by `bun run tauri:dev` |
 
@@ -38,11 +39,17 @@ then run the *same validated controller* on a microcontroller and compare the
 traces. Not a Simulink replacement — a focused platform for measuring the gap
 between simulation and embedded execution.
 
-Maturity: **the whole chain works, end to end.** A diagram simulates on the PC,
-compiles to a plan, and that plan runs on a NUCLEO-F767ZI producing a trace
-identical to the simulator's f32 reference — bit for bit, on all four fixtures.
-What is missing is not correctness but a control *loop*: no hardware timer, no
-I/O, no transport. **[V]**
+Maturity: **two boards, a wire between them, and a control loop that keeps
+time.** A diagram simulates on the PC, compiles to a plan, and that plan runs on
+either microcontroller producing a trace identical to the simulator's f32
+reference — bit for bit, on four architectures. The loop is timer-driven with
+78 ns of jitter, and the boards can talk to each other at 6 Mbaud with
+CRC-verified frames. **[V]**
+
+What is missing is the last step: nothing is *closed* yet. The controller and
+the plant have never run against each other, so the project has still never
+measured a non-zero error. That is stage E3, and it is where bit-exactness ends
+and real error begins.
 
 ## Layer status
 
@@ -50,7 +57,7 @@ I/O, no transport. **[V]**
 | --- | --- |
 | **Frontend** `frontend/` | Working. React Flow canvas in a Tauri v2 shell: block library, project save/open, scope plotting, compile report. No automated tests — see the manual checklist in `frontend/AGENTS.md`. |
 | **Backend** `backend/` | Working. Parse → validate → simulate (f64), plus `plan.rs` (compile to a Deployable Control Plan) and `exec.rs` (f32 reference executor). Verified sample-by-sample against MATLAB. |
-| **Firmware** `firmware/` | `firmware/ctrl/` — the plan loader, two-pass scheduler and all ten kernels — **runs on the NUCLEO-F767ZI and is bit-exact against the reference on all four fixtures.** A step costs 13-19 us. See [`firmware/ctrl/README.md`](firmware/ctrl/README.md). |
+| **Firmware** `firmware/` | `firmware/ctrl/` — plan loader, two-pass scheduler, ten kernels — **runs on both boards, timer-driven, bit-exact on every fixture.** `firmware/link/` moves CRC-verified frames between them at up to 6 Mbaud. `firmware/bringup/` is the probe. See [`firmware/ctrl/README.md`](firmware/ctrl/README.md) and [`firmware/link/README.md`](firmware/link/README.md). |
 
 ## The three environments
 
@@ -70,6 +77,14 @@ I/O, no transport. **[V]**
     `PATH`; the script finds it.
   - `console.py` resets and captures. See Loose ends on why it must set
     `clocal -crtscts`.
+  - **The H743 is here too, on a J-Link.** SEGGER tools are installed, and the
+    probe is an ST-Link V2 reflashed with J-Link firmware (SN 771810076,
+    distinct from the Nucleo's onboard ST-Link). Flash it with
+    `west flash --runner jlink`, read its console with
+    `firmware/scripts/rtt-read.py`. If it ever stops answering: hold BOOT0,
+    power-cycle, hold a second, release — the ROM bootloader never sleeps, so
+    the core stays attachable. **[V]**
+  - `openocd` and `dfu-util` are also present as fallbacks; neither was needed.
   - Working checkout is `~/source/ctrl-lab`; `~/ctrl-lab` is a stale one, see
     Loose ends.
 
@@ -102,9 +117,21 @@ attributable to one transition. Full detail in [`POC-PLAN.md`](POC-PLAN.md).
 | --- | --- | --- |
 | A → B | MATLAB → ctrl-lab engine, both f64 | **done**, within 1e-6 |
 | C | the DCP format + f32 | **done**, bound 5.8e-6 |
-| D | C kernels + scheduler, 1 MCU | **done** — bit-exact on hardware, all four fixtures. No timer/IO yet |
-| E | inter-MCU transport + delay | not started |
+| D | C kernels + scheduler, 1 MCU | **done** — bit-exact on hardware, timer-driven, 78 ns jitter |
+| E | inter-MCU transport + delay | **in progress** — E0/E1/E2 done, E3 (closed loop) is next |
 | F | DAC/ADC, quantization, clock skew | not started |
+
+### Stage E, broken down
+
+Tracked as epic `ctrl-lab-b7r`. `bd ready` is authoritative; this is orientation.
+
+| | | |
+| --- | --- | --- |
+| E0 | bring up the H743 with an RTT console | **done** |
+| E1 | control runtime on the H743, plant-only plan | **done** — bit-exact, 4th architecture |
+| E2 | DCPT frame over UART, measure delay | **done** — 6 Mbaud, 541 KB/s, 3.2 us one-way |
+| E-io | Input/Output blocks and `io_bindings` | open, blocks E3 |
+| E3 | close the loop, measure clock skew | **next** — blocked on E-io |
 
 ### Two results from stage C that shape everything after it
 
@@ -202,7 +229,27 @@ the deadline counter is not decoration. **[V]**
 
 ## Hardware
 
-**Settled: the NUCLEO-F767ZI** (`nucleo_f767zi`), on the desk and running.
+**Two boards, both running, both on the Mac.** The NUCLEO-F767ZI is the
+controller; the WeAct MiniSTM32H743 is the plant, brought up 2026-09-06. They
+are wired together — see [`firmware/link/README.md`](firmware/link/README.md).
+
+| | F767ZI | WeAct H743 |
+| --- | --- | --- |
+| role | controller | plant |
+| clock | 216 MHz | 240 MHz |
+| console | `usart3`, ST-Link VCP | **SEGGER RTT** over SWD |
+| flashed by | ST-Link (`flash.sh`) | J-Link (`west flash --runner jlink`) |
+| link UART | `usart6`, Arduino D0/D1 | `usart1`, PA9/PA10 |
+| analog | `adc1`/`dac1`/`tim1_ch3` enabled | none enabled |
+| caches | **free, to the cycle** | **3.6x throughput, 24x jitter** |
+
+The cache row is the one to remember: identical code, opposite conclusions. The
+F767's ART accelerator and core-adjacent SRAM leave L1 nothing to add; the H743
+puts main RAM in AXI SRAM in D1 where a miss is expensive. With caches off the
+two boards perform nearly identically, so the H743's whole advantage is its
+memory path rather than its core. Full table in `firmware/ctrl/README.md`.
+
+**Original target notes: the NUCLEO-F767ZI** (`nucleo_f767zi`), on the desk and running.
 STM32F767ZI, Cortex-M7 at 216 MHz, 2 MB flash, 384 KB SRAM + 128 KB DTCM. The
 WeAct MiniSTM32H743 is retired but its notes are kept. **[V]**
 
@@ -255,6 +302,11 @@ A/B then. **[V]** for the measurement, **[I]** for the explanation.
 | Free-running (fast) | `bash firmware/scripts/build.sh ctrl nucleo_f767zi -p always -- -DCTRL_FREE_RUN=y` | **[V]** same digest, <1 s |
 | Grade a device run | `python3 firmware/scripts/grade-trace.py test-projects/04-2nd-order-system.f32.csv run.txt --expect-digest 0xfddb22c1a9525b2c` | **[V]** PASS - bit-for-bit |
 | Host harness, hex text | `./firmware/ctrl/host/ctrl-host --text <plan.dcp> <steps>` | **[V]** |
+| Build for the H743 | `EXTRA_CONF=rtt.conf bash firmware/scripts/build.sh ctrl mini_stm32h743 -p always` | **[V]** |
+| Flash the H743 | `west flash --runner jlink -d ~/ctrl-lab-build/ctrl/mini_stm32h743` | **[V]** |
+| Read the H743 console | `python3 firmware/scripts/rtt-read.py <build>/zephyr/zephyr.elf --out run.bin` | **[V]** RTT out of target memory |
+| Link, responder | `EXTRA_CONF=rtt.conf bash firmware/scripts/build.sh link mini_stm32h743 -p always -- -DLINK_ROLE=responder -DLINK_BAUD=6000000` | **[V]** |
+| Link, initiator | `bash firmware/scripts/build.sh link nucleo_f767zi -p always -- -DLINK_ROLE=initiator -DLINK_BAUD=6000000` | **[V]** 541 KB/s, CRC OK |
 | Host harness | `bash firmware/ctrl/host/build.sh` | **[V]** |
 | Grade a trace | `./firmware/ctrl/host/ctrl-host <plan.dcp> <steps> \| python3 firmware/scripts/grade-trace.py <ref.f32.csv>` | **[V]** PASS on all four |
 | Bit-exact digest | `cargo run --manifest-path backend/Cargo.toml -- --trace-hash test-projects/04-2nd-order-system.json` | **[V]** matches the C core |
@@ -502,3 +554,40 @@ changed nothing and was reverted. The actual cause was on the host: macOS
 defaults the port to hardware flow control that the VCP does not drive. Reading
 `stty -a` first would have been quicker than editing firmware — the same lesson
 `BRINGUP.md` already draws about reading the generated `.config`.
+
+**Stage E begins** (`b9eca98`, `c76d870`, `b4ef852`, `28730de`, `b664ad6`). The
+second board arrived at the bench and the project became what it was designed to
+be: two microcontrollers, a wire, and a controller that has to survive the gap.
+
+The H743 came up over SEGGER RTT, which cost three separate failures before it
+said anything — the D-cache hiding the RTT buffer from the debug probe, idle
+taking the core off the SWD bus entirely, and `JLinkRTTLogger` never finding a
+control block that was plainly in memory. All three are written into
+`BRINGUP.md` with their exact symptoms, because each one looks like a dead board
+and none of them is.
+
+Then `firmware/ctrl` ran on it unchanged, executing a plant-only plan, and
+returned the reference digest bit for bit. That is the data-driven architecture
+paying off exactly as `firmware/AGENTS.md` promised: the plant needed no new
+firmware, only a different `.dcp`. Four architectures now agree to the bit.
+
+An anomaly from that run turned into the most useful measurement of the day. The
+H743 showed 66x the tick jitter of the F767, and running the identical plan on
+both boards with caches on and off explained it: on the F767 the caches are free
+to the cycle, and on the H743 they buy 3.6x throughput for 24x jitter. The
+classic real-time trade, with numbers instead of an argument — and a direct
+consequence for E3, where the plant board should probably run caches off.
+
+Finally the two boards were wired together, and the link went from working once
+to working never to working always. Four boundary bugs, every one of them a gap
+where the receiver stopped reading while the sender kept sending: a CRC between
+payload and trailer, a CRC before the payload, a deadline built after reading a
+command byte, and — mine — a drain loop that swallowed the very report meant to
+diagnose it. The rule underneath them all is that on a polled link there is no
+safe pause inside a transfer.
+
+The last cause was the kernel tick ISR preempting the poll loop, found in one run
+after instrumenting the responder to say *where* it stopped rather than *that* it
+stopped. Before instrumenting, four changes across three sweeps taught nothing.
+That is the lesson worth keeping from today, and it is the third time this
+project has been rescued by measuring instead of reasoning.
