@@ -1,7 +1,7 @@
 # Design Specification: Non-Blocking DMA Receive for Stage E3 Control Loop
 
 **Date:** 2026-09-07  
-**Status:** Approved  
+**Status:** Approved (Post Stress-Test)  
 **Related Beads:** `ctrl-lab-b7r.7` (Decision), `ctrl-lab-b7r` (Stage E Epic), `ctrl-lab-b7r.4` (Stage E3)
 
 ---
@@ -46,11 +46,14 @@ This specification defines a non-blocking, zero-CPU-overhead receive architectur
 };
 ```
 
-### 2.3 Memory Placement & Cache Coherency (Cortex-M7)
+### 2.3 Memory Placement, Bus Matrix & Cache Coherency (Cortex-M7)
 Both target chips feature Cortex-M7 cores with active L1 data cache (D-cache):
-- Because DMA controllers write physical SRAM without passing through the L1 cache pipeline, sharing cached RAM with DMA introduces cache incoherency hazards.
-- All DMA reception ping-pong buffers must reside in **non-cacheable memory** (using Zephyr's `__nocache` attribute or dedicated non-cached SRAM / DTCM sections).
-- This avoids costly manual cache line flushes/invalidations in the real-time hot path.
+- **STM32H7 Bus Matrix Restriction**: On the STM32H743, peripheral DMA controllers (DMA1/DMA2) **cannot access DTCM** (0x20000000). Directing DMA streams to DTCM triggers a hardware transfer error. DMA buffers on the H743 must be located in **SRAM (D2 domain)** (e.g. `sram1` or `sram2` at `0x30000000`).
+- **Cache Incoherency Hazard**: Because DMA controllers write physical SRAM without passing through the CPU L1 cache, sharing cached RAM with DMA introduces cache stale read and dirty writeback corruption.
+- **MPU Non-Cacheable Region**: All DMA reception buffers must reside in **non-cacheable memory** backed by MPU configuration:
+  - `CONFIG_ARM_MPU=y`
+  - `CONFIG_NOCACHE_MEMORY=y`
+  - Buffers tagged with Zephyr's `__nocache` attribute.
 
 ---
 
@@ -77,19 +80,30 @@ struct __packed ctrl_link_pkt {
 - On-wire duration: $53.4\,\mu\text{s}$
 - In a 1000 µs (1 kHz) or 50,000 µs (20 Hz) control period, wire time is a minor fraction of the cycle budget.
 
-### 3.2 Continuous Asynchronous Reception Flow
+### 3.2 Continuous Asynchronous Reception Flow & 4-Slot Buffer Ring
 
-1. **Buffer Provisioning**:
-   - Two ping-pong buffers (`rx_buf[0]` and `rx_buf[1]`), each `sizeof(struct ctrl_link_pkt)` in non-cacheable RAM.
+1. **4-Slot Buffer Ring**:
+   - Instead of a bare 2-buffer ping-pong, allocate a 4-slot circular buffer ring (`rx_buf[4]`, 128 bytes total) in non-cacheable RAM to eliminate buffer starvation risks during high-frequency interrupts or rapid bursts.
    - Armed via `uart_rx_enable(link, rx_buf[0], sizeof(rx_buf[0]), SYS_FOREVER_US)`.
 2. **Buffer Request Callback (`UART_RX_BUF_REQUEST`)**:
    - The driver requests the next buffer before the current one finishes.
-   - The callback immediately calls `uart_rx_buf_rsp(link, rx_buf[next_idx], sizeof(rx_buf[next_idx]))`.
+   - The callback immediately responds with the next slot in the ring: `uart_rx_buf_rsp(link, rx_buf[next_idx], sizeof(rx_buf[next_idx]))`.
 3. **Completion Callback (`UART_RX_RDY`)**:
    - Triggered when all 32 bytes of a frame land in RAM.
    - Validates `magic == 0x434C` and checks `crc32`.
    - On match: stamps arrival time `rx_cycle = k_cycle_get_32()` and atomically marks the buffer as latest ready (`atomic_set(&latest_ready_idx, current_idx)`).
-   - On corruption/framing error: increments `rx_crc_errors` and realigns on magic word boundary.
+   - On corruption/framing mismatch: invokes framing realignment (see Section 3.3).
+4. **Auto-Recovery on Disabling (`UART_RX_DISABLED`)**:
+   - If an overrun or callback starvation disables DMA, the handler immediately logs `dma_starved++` and re-enables DMA reception (`uart_rx_enable`).
+
+### 3.3 Active Framing Realignment on Noise / Wire Glitches
+If electrical noise or startup shifts the byte stream:
+1. When `UART_RX_RDY` fails magic or CRC, scan the 32-byte corrupted buffer for `0x434C`.
+2. If `0x434C` is found at offset $K \in [1, 31]$:
+   - Temporarily disable DMA (`uart_rx_disable`).
+   - Read the $K$ trailing bytes to re-synchronize the hardware FIFO/stream.
+   - Re-enable 32-byte DMA reception.
+3. Guard the realignment routine with a retry cap ($N \le 3$); if unaligned after 3 retries, fall back to line idle detection and buffer flush.
 
 ---
 
@@ -102,6 +116,7 @@ In accordance with Stage E3 objectives, the controller and plant run **unsynchro
 At the start of each control tick:
 1. The control thread inspects `latest_ready_idx`.
 2. If a new packet arrived ($S_{\text{curr}} == S_{\text{last}} + 1$):
+   - Check arithmetic safety: verify `isfinite(signals[i])` for each signal. If non-finite (`NaN`/`Inf`), trigger safety `FAULT`.
    - Copy `signals[]` into the plan's input vector.
    - Record normal progress.
 3. If no new packet arrived ($S_{\text{curr}} == S_{\text{last}}$):
@@ -112,10 +127,14 @@ At the start of each control tick:
    - Remote board is running slightly faster than the local board.
    - Latch newest sample and log `overrun_count++`.
 
-### 4.3 Clock Skew Measurement Formula
-Comparing sender tick timestamps against local reception cycle counter values over $N$ steps:
-$$\text{Drift}[k] = (t_{\text{rx}}[k] - t_{\text{rx}}[0]) - (t_{\text{tx}}[k] - t_{\text{tx}}[0])$$
-This directly computes crystal frequency deviation (PPM) and link transport jitter without introducing artificial time synchronization protocols.
+### 4.3 Clock Skew Measurement & 32-Bit Cycle Counter Wrap
+On Cortex-M7 running at 216/240 MHz, `k_cycle_get_32()` overflows every $\approx 17.9\text{--}19.9\,\text{s}$. To prevent integer wrap corruption on runs $> 17.8\,\text{s}$:
+1. Compute per-step cycle increments via unsigned modular subtraction:
+   $$\Delta t_{\text{rx}}[k] = (\text{uint32\_t})(t_{\text{rx}}[k] - t_{\text{rx}}[k-1])$$
+   $$\Delta t_{\text{tx}}[k] = (\text{uint32\_t})(t_{\text{tx}}[k] - t_{\text{tx}}[k-1])$$
+2. Accumulate drift in a signed 64-bit accumulator:
+   $$\text{cumulative\_skew\_cycles} \mathrel{+}= (\text{int64\_t})\Delta t_{\text{rx}}[k] - (\text{int64\_t})\Delta t_{\text{tx\_local}}[k]$$
+3. Evaluate packet sequence deltas as signed: `(int32_t)(seq_curr - seq_last)`.
 
 ### 4.4 Failsafe & Error Handling
 If missed deadlines exceed 5 consecutive ticks, the runtime transitions to `FAULT`, setting actuator outputs to safe values and stopping plan execution.
@@ -147,3 +166,28 @@ If missed deadlines exceed 5 consecutive ticks, the runtime transitions to `FAUL
   - Transport latency
   - Deadline misses / slips
   - Maximum absolute error ($e_{\text{max}}$) and RMS error.
+
+---
+
+## 6. Stress Test Results: Non-Blocking DMA Receive for Stage E3
+
+### Resolved Decisions
+- **Framing Realignment**: Added active offset-search realignment on CRC failure with a bounded retry limit ($N \le 3$) to recover from electrical glitches without falling out of sync.
+- **Buffer Starvation Defense**: Sized buffer pool to a 4-slot ring (128 bytes total) and added an explicit `UART_RX_DISABLED` auto-rearm handler.
+- **Cycle Counter Wrap**: Switched clock skew tracking from naive difference against $t_0$ to modular unsigned step-to-step delta subtraction and a 64-bit accumulator, preventing wrap corruption after 17.9 s.
+- **Hardware Bus Constraints**: Constrained H743 DMA buffers to D2 domain SRAM (`sram1`/`sram2`), explicitly avoiding DTCM which is inaccessible to DMA1/DMA2 on STM32H7.
+- **Arithmetic Safety**: Mandated `isfinite()` validation on all deserialized float signals before passing them to the kernel dispatch table, triggering `FAULT` if non-finite.
+
+### Changes Made
+- Updated Section 2.3 with STM32H7 bus matrix rules.
+- Upgraded Section 3.2 to a 4-slot circular DMA ring.
+- Added Section 3.3 for framing realignment.
+- Updated Section 4.2 with `isfinite()` validation.
+- Updated Section 4.3 with modular delta arithmetic and 64-bit skew accumulation.
+
+### Deferred / Parking Lot
+- Slaving the plant clock to the controller tick: Intentionally deferred to a follow-up experiment as required by the E3 roadmap (measuring free-running crystal drift is the primary deliverable of E3).
+
+### Confidence Assessment
+- **Overall**: High
+- **Areas of Concern**: Ensuring Zephyr's STM32 async UART driver correctly binds DMAMUX channels on the WeAct MiniSTM32H743 without device tree discrepancies (to be validated in Step 1).
