@@ -1,0 +1,20 @@
+/*
+ * The link end of the F767: usart6, which is the Arduino header's serial.
+ *
+ *   D1 = PG14 = USART6_TX  ->  H743 PA10 (RX)
+ *   D0 = PG9  = USART6_RX  <-  H743 PA9  (TX)
+ *   GND <-> GND
+ *
+ * usart6 is on APB2 at 108 MHz, twice the clock of the APB1 UARTs, which is why
+ * it is the link rather than a spare usart2. It is already enabled in the board
+ * .dts at 115200; the generated link-baud.overlay overrides the speed.
+ *
+ * The console stays on usart3 (ST-Link VCP), so measurements print over a
+ * channel that is not the one being measured.
+ */
+
+/ {
+	aliases {
+		link-uart = &usart6;
+	};
+};

@@ -1,0 +1,36 @@
+/*
+ * The link end of the H743: usart1 on PA9/PA10, which the board leaves free.
+ *
+ *   PA9  = USART1_TX  ->  F767 D0 (PG9, RX)
+ *   PA10 = USART1_RX  <-  F767 D1 (PG14, TX)
+ *   GND <-> GND
+ *
+ * usart1 is on APB2 at 120 MHz, the fastest peripheral bus here. PB6/PB7 would
+ * also carry usart1 but PB6 is QuadSPI NCS for the onboard NOR flash; PB14/PB15
+ * are the clean alternative if PA9 ever turns out to be tied to USB VBUS on a
+ * given board revision.
+ *
+ * gcd(108, 120) = 12, so 1/2/3/4/6 Mbaud are exact on both ends with zero baud
+ * error. See firmware/link/README.md.
+ */
+
+/ {
+	aliases {
+		link-uart = &usart1;
+	};
+
+	chosen {
+		/* Same reason as every other application here: the board .dts
+		 * declares dtcm but never selects it, so without this the
+		 * __dtcm_* sections do not exist. See firmware/BRINGUP.md.
+		 */
+		zephyr,dtcm = &dtcm;
+	};
+};
+
+&usart1 {
+	pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pa10>;
+	pinctrl-names = "default";
+	current-speed = <1000000>;
+	status = "okay";
+};
