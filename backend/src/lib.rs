@@ -873,9 +873,22 @@ pub fn simulate_validated_dag(dag: &ValidatedDag) -> Result<SimulationOutput, Si
                         input_b,
                     )
                 }
-                "scope" | "display" => {
+                "scope" | "display" | "output" => {
                     read_input_value(&current_values, &incoming_edges_by_port, node_id, "in")?
                 }
+                // There is no link on a PC. This reads its `default` and says
+                // so, rather than modelling a transport it cannot see: the
+                // numerical reference for a two-board run is the COMBINED
+                // diagram with an explicit `delay` block, not a simulation of
+                // either half. See
+                // .internal/specs/2026-09-10-io-blocks-design.md, decision 4.
+                "input" => parse_numeric_property(node, "default", 0.0).map_err(|value| {
+                    SimulationError::InvalidNumericProperty {
+                        node_id: node.id.clone(),
+                        property: "default".to_string(),
+                        value,
+                    }
+                })?,
                 unsupported => {
                     return Err(SimulationError::UnsupportedNodeType {
                         node_id: node.id.clone(),
@@ -995,11 +1008,16 @@ fn block_behavior(node_type: &str) -> BlockBehavior {
             is_stateful: true,
             is_direct_feedthrough: false,
         },
-        "constant" | "step" | "squareWave" => BlockBehavior {
+        // `input` has no input ports, so like every other source there is
+        // nothing for it to feed through. The case this actually buys is a
+        // diagram that wires an `output` back round to an `input` - a loopback
+        // across the pair of boards - which is a legal thing to test and which
+        // would otherwise be reported as an algebraic loop.
+        "constant" | "step" | "squareWave" | "input" => BlockBehavior {
             is_stateful: false,
             is_direct_feedthrough: false,
         },
-        "gain" | "sum" | "switch" | "scope" | "display" => BlockBehavior {
+        "gain" | "sum" | "switch" | "scope" | "display" | "output" => BlockBehavior {
             is_stateful: false,
             is_direct_feedthrough: true,
         },

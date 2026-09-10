@@ -50,15 +50,21 @@ settled before two people pick different values for the same thing; a loader
 that meets an unimplemented role rejects the plan by name rather than by
 falling through.
 
-### 3. `Input` is a source. That is the load-bearing part.
+### 3. `Input` is a source
 
-`is_direct_feedthrough: false`, like `constant` and `step`.
+`is_direct_feedthrough: false`, like `constant` and `step`, and for the same
+plain reason: it has no input ports, so there is nothing it could feed through.
 
-Not a detail. In the combined diagram the controller and plant form a loop, and
-the only reason it is not an *algebraic* loop is that something in it does not
-pass its input straight to its output. On hardware that something is the link.
-In the graph it has to be the `Input` block, or validation will report a cycle
-in a diagram that runs perfectly well on two boards.
+The consequence worth stating is narrower than it first looks. In the *split*
+projects there is no loop to detect — `Input` is a source and `Output` is a
+sink, so neither diagram has a cycle either way. And the *combined* reference
+diagram does not contain these blocks at all; its loop is broken by the
+explicit `delay` block that stands in for the transport.
+
+Where it does matter is a single diagram that wires an `Output` back round to
+an `Input` — a loopback, on one board or across the pair. That is a legal thing
+to want to test, and this flag is what stops validation calling it an algebraic
+loop.
 
 ### 4. In simulation, `Input` reads a constant and `Output` discards
 

@@ -18,7 +18,29 @@ pub const DCP_FORMAT_VERSION: u16 = 1;
 /// Kernel-library version. Bump whenever a `KernelId` is added or its parameter
 /// or state layout changes. A firmware advertising an older set must reject a
 /// plan it cannot fully execute.
-pub const KERNEL_SET_VERSION: u16 = 1;
+///
+/// v2 appended `Input` and `Output`.
+///
+/// This is the version of the library, i.e. the highest a plan may demand. It
+/// is NOT what gets stamped into a plan: see [`KernelId::min_set_version`].
+pub const KERNEL_SET_VERSION: u16 = 2;
+
+/// Peripheral class an [`IoBinding`] names. Wire-stable: never renumber, only
+/// append.
+///
+/// The class lives here rather than in the kernel id on purpose. One generic
+/// pair of kernels plus a role keeps stage F's analog I/O to a new constant,
+/// instead of two more kernels and another `KERNEL_SET_VERSION` bump.
+pub mod channel_role {
+    /// The MCU-to-MCU serial link.
+    pub const LINK: u16 = 1;
+    /// Reserved for stage F.
+    pub const ADC: u16 = 2;
+    /// Reserved for stage F.
+    pub const DAC: u16 = 3;
+    /// Reserved.
+    pub const GPIO: u16 = 4;
+}
 
 const DCP_MAGIC: [u8; 4] = *b"DCP1";
 /// Fixed header size: 4-byte magic + 48 bytes of fields.
@@ -43,6 +65,12 @@ pub enum KernelId {
     TransferFunction = 9,
     /// Sink / unity passthrough (scope, display) — carries a signal for telemetry.
     Scope = 10,
+    /// Reads a hardware channel named by an [`IoBinding`]. A source: it has no
+    /// inputs, and in a PC simulation it evaluates to its `default` parameter.
+    Input = 11,
+    /// Writes a hardware channel named by an [`IoBinding`], and passes its
+    /// input through so a scope can watch what was sent.
+    Output = 12,
 }
 
 impl KernelId {
@@ -62,6 +90,8 @@ impl KernelId {
             8 => Self::Integrator,
             9 => Self::TransferFunction,
             10 => Self::Scope,
+            11 => Self::Input,
+            12 => Self::Output,
             _ => return None,
         })
     }
@@ -79,15 +109,40 @@ impl KernelId {
             "integrator" => Self::Integrator,
             "transferFunction" => Self::TransferFunction,
             "scope" | "display" => Self::Scope,
+            "input" => Self::Input,
+            "output" => Self::Output,
             _ => return None,
         })
+    }
+
+    /// The oldest kernel library that can execute this kernel.
+    ///
+    /// A plan is stamped with the highest of these over the blocks it actually
+    /// contains, not with `KERNEL_SET_VERSION`. The firmware refuses a plan
+    /// demanding more than it advertises (`dcp.c:195`), so stamping the library
+    /// version on every plan would lock v1 firmware out of a diagram of gains
+    /// and sums that it can run perfectly well.
+    fn min_set_version(self) -> u16 {
+        match self {
+            Self::Constant
+            | Self::Step
+            | Self::SquareWave
+            | Self::Gain
+            | Self::Sum
+            | Self::Switch
+            | Self::Delay
+            | Self::Integrator
+            | Self::TransferFunction
+            | Self::Scope => 1,
+            Self::Input | Self::Output => 2,
+        }
     }
 
     /// Input ports in the order the kernel gathers them. Sources have none.
     fn input_ports(self) -> &'static [&'static str] {
         match self {
-            Self::Constant | Self::Step | Self::SquareWave => &[],
-            Self::Gain | Self::Integrator | Self::Delay | Self::Scope => &["in"],
+            Self::Constant | Self::Step | Self::SquareWave | Self::Input => &[],
+            Self::Gain | Self::Integrator | Self::Delay | Self::Scope | Self::Output => &["in"],
             Self::Sum => &["a", "b"],
             Self::Switch => &["a", "b", "sel"],
             Self::TransferFunction => &["in"],
@@ -180,6 +235,7 @@ pub fn build_control_plan(dag: &ValidatedDag) -> Result<ControlPlan, SimulationE
     let mut params: Vec<f32> = Vec::new();
     let mut state_len: u32 = 0;
     let mut blocks: Vec<BlockRecord> = Vec::with_capacity(dag.topological_order.len());
+    let mut io_bindings: Vec<IoBinding> = Vec::new();
 
     for (index, node_id) in dag.topological_order.iter().enumerate() {
         let node = dag
@@ -204,6 +260,19 @@ pub fn build_control_plan(dag: &ValidatedDag) -> Result<ControlPlan, SimulationE
             inputs.push(slot_of[source]);
         }
 
+        // Every Input and Output gets a binding, always. An unbound one would
+        // read or write whatever the HAL defaults to and look like it worked,
+        // so the firmware refuses that case and the backend never emits it.
+        if matches!(kernel, KernelId::Input | KernelId::Output) {
+            io_bindings.push(IoBinding {
+                block_index: index as u32,
+                // Stage E has one peripheral class. Stage F adds a `role`
+                // property here rather than another pair of kernels.
+                channel_role: channel_role::LINK,
+                channel_index: channel_index(node)?,
+            });
+        }
+
         let (block_params, block_state_len) = pack_params(kernel, node, step_size)?;
         let param_offset = params.len() as u32;
         params.extend(block_params);
@@ -224,16 +293,24 @@ pub fn build_control_plan(dag: &ValidatedDag) -> Result<ControlPlan, SimulationE
         });
     }
 
+    // The highest any block actually demands, so a plan that uses none of the
+    // newer kernels still loads on firmware that predates them.
+    let kernel_set_version = blocks
+        .iter()
+        .map(|block| block.kernel_id.min_set_version())
+        .max()
+        .unwrap_or(1);
+
     Ok(ControlPlan {
         format_version: DCP_FORMAT_VERSION,
-        kernel_set_version: KERNEL_SET_VERSION,
+        kernel_set_version,
         base_ts_ns: (step_size * 1e9).round() as u64,
         signal_count: dag.topological_order.len() as u32,
         state_len,
         wcet_estimate_ns: 0,
         blocks,
         params,
-        io_bindings: Vec::new(),
+        io_bindings,
         meta: PlanMeta {
             model_name: dag.metadata.title.clone(),
             generated_at: dag.metadata.generated_at.clone(),
@@ -305,7 +382,36 @@ fn pack_params(
             (packed, order as u32)
         }
         KernelId::Scope => (Vec::new(), 0),
+        // `default` is what this block reads when nothing is bound underneath
+        // it - every PC simulation, and the host harness. See
+        // .internal/specs/2026-09-10-io-blocks-design.md, decision 4.
+        KernelId::Input => (vec![numeric("default", 0.0)?], 0),
+        KernelId::Output => (Vec::new(), 0),
     })
+}
+
+/// The channel an `Input`/`Output` node binds to.
+///
+/// `POC-PLAN.md` asks for named channels; the wire carries a `u16`. The name is
+/// resolved here, at compile time, so the format stays numeric and the firmware
+/// never parses a string.
+fn channel_index(node: &SerializedNode) -> Result<u16, SimulationError> {
+    let raw = crate::parse_numeric_property(node, "channel", 0.0).map_err(|value| {
+        SimulationError::InvalidNumericProperty {
+            node_id: node.id.clone(),
+            property: "channel".to_string(),
+            value,
+        }
+    })?;
+
+    if !raw.is_finite() || raw < 0.0 || raw > u16::MAX as f64 || raw.fract() != 0.0 {
+        return Err(SimulationError::InvalidNumericProperty {
+            node_id: node.id.clone(),
+            property: "channel".to_string(),
+            value: raw.to_string(),
+        });
+    }
+    Ok(raw as u16)
 }
 
 fn operator_code(operator: char) -> f32 {
@@ -695,6 +801,189 @@ mod tests {
             let decoded = decode(&bytes).expect("plan must decode");
             assert_eq!(plan, decoded, "round trip mismatch for {name}");
         }
+    }
+
+    /// A controller-shaped project: reads y off the link, applies a gain, and
+    /// writes u back to it. This is the shape `controller.json` will have.
+    fn io_project() -> String {
+        r#"{
+            "version": 1,
+            "kind": "ctrl-lab-project",
+            "generatedAt": "2026-09-10T00:00:00.000Z",
+            "title": "io-test",
+            "simulation": { "endTime": 0.2, "stepSize": 0.1 },
+            "nodes": [
+                {
+                    "id": "in-1", "type": "input", "label": "Input",
+                    "role": "in-01", "position": { "x": 0, "y": 0 },
+                    "properties": { "channel": "0", "default": "0.25", "dataType": "f32" }
+                },
+                {
+                    "id": "gain-2", "type": "gain", "label": "Gain",
+                    "role": "gain-01", "position": { "x": 144, "y": 0 },
+                    "properties": { "gain": "4.0", "dataType": "f32" }
+                },
+                {
+                    "id": "out-3", "type": "output", "label": "Output",
+                    "role": "out-01", "position": { "x": 288, "y": 0 },
+                    "properties": { "channel": "1", "dataType": "f32" }
+                }
+            ],
+            "edges": [
+                {
+                    "id": "e1", "sourceNodeId": "in-1", "sourcePortId": "out",
+                    "targetNodeId": "gain-2", "targetPortId": "in"
+                },
+                {
+                    "id": "e2", "sourceNodeId": "gain-2", "sourcePortId": "out",
+                    "targetNodeId": "out-3", "targetPortId": "in"
+                }
+            ],
+            "graphIndex": {
+                "nodesById": {
+                    "in-1": {
+                        "type": "input", "role": "in-01",
+                        "inputPortIds": [], "outputPortIds": ["out"]
+                    },
+                    "gain-2": {
+                        "type": "gain", "role": "gain-01",
+                        "inputPortIds": ["in"], "outputPortIds": ["out"]
+                    },
+                    "out-3": {
+                        "type": "output", "role": "out-01",
+                        "inputPortIds": ["in"], "outputPortIds": []
+                    }
+                },
+                "incomingEdgesByNodeId": {
+                    "in-1": [], "gain-2": ["e1"], "out-3": ["e2"]
+                },
+                "outgoingEdgesByNodeId": {
+                    "in-1": ["e1"], "gain-2": ["e2"], "out-3": []
+                }
+            }
+        }"#
+        .to_string()
+    }
+
+    #[test]
+    fn io_blocks_emit_one_binding_each() {
+        let dag = parse_project_json(&io_project()).expect("project must parse");
+        let plan = build_control_plan(&dag).expect("plan must build");
+
+        assert_eq!(plan.io_bindings.len(), 2, "one binding per io block, no more");
+
+        let input = &plan.io_bindings[0];
+        assert_eq!(plan.blocks[input.block_index as usize].kernel_id, KernelId::Input);
+        assert_eq!(input.channel_role, channel_role::LINK);
+        assert_eq!(input.channel_index, 0);
+
+        let output = &plan.io_bindings[1];
+        assert_eq!(plan.blocks[output.block_index as usize].kernel_id, KernelId::Output);
+        assert_eq!(output.channel_role, channel_role::LINK);
+        assert_eq!(output.channel_index, 1);
+    }
+
+    /// The stamped version is what the plan DEMANDS, not what the backend can
+    /// emit. Getting this wrong would lock v1 firmware out of every plan.
+    #[test]
+    fn only_plans_that_need_the_new_kernels_demand_kernel_set_2() {
+        let with_io = build_control_plan(&parse_project_json(&io_project()).unwrap()).unwrap();
+        assert_eq!(with_io.kernel_set_version, 2);
+
+        for name in [
+            "01-double-integrator.json",
+            "02-feedback-TF.json",
+            "03-TF-test.json",
+            "04-2nd-order-system.json",
+        ] {
+            let plan = build_control_plan(&fixture(name)).expect("plan must build");
+            assert_eq!(
+                plan.kernel_set_version, 1,
+                "{name} uses no kernel newer than v1 and must not demand v2"
+            );
+        }
+    }
+
+    #[test]
+    fn io_plan_round_trips_with_its_bindings() {
+        let dag = parse_project_json(&io_project()).expect("project must parse");
+        let plan = build_control_plan(&dag).expect("plan must build");
+        let decoded = decode(&encode(&plan)).expect("plan must decode");
+
+        assert_eq!(plan, decoded);
+        assert_eq!(decoded.io_bindings.len(), 2);
+    }
+
+    #[test]
+    fn input_default_is_packed_and_output_takes_no_params() {
+        let dag = parse_project_json(&io_project()).expect("project must parse");
+        let plan = build_control_plan(&dag).expect("plan must build");
+
+        let input = plan
+            .blocks
+            .iter()
+            .find(|b| b.kernel_id == KernelId::Input)
+            .expect("input block");
+        assert_eq!(input.param_len, 1);
+        assert_eq!(plan.params[input.param_offset as usize], 0.25);
+
+        let output = plan
+            .blocks
+            .iter()
+            .find(|b| b.kernel_id == KernelId::Output)
+            .expect("output block");
+        assert_eq!(output.param_len, 0);
+        assert_eq!(output.inputs.len(), 1, "output reads exactly one signal");
+    }
+
+    #[test]
+    fn rejects_a_channel_that_is_not_a_whole_number() {
+        let json = io_project().replace(r#""channel": "0""#, r#""channel": "CH-1""#);
+        let dag = parse_project_json(&json).expect("project must parse");
+
+        assert!(
+            matches!(
+                build_control_plan(&dag),
+                Err(SimulationError::InvalidNumericProperty { ref property, .. })
+                    if property == "channel"
+            ),
+            "a scope-style channel name must be refused by name, not silently taken as 0"
+        );
+    }
+
+    /// The property the whole project rests on, extended to the new blocks:
+    /// the f64 simulator and the f32 reference executor must agree about what
+    /// an `Input` reads and what an `Output` passes through. If these two ever
+    /// disagree, a two-board run graded against the simulator would report an
+    /// error that is really a definition mismatch.
+    #[test]
+    fn simulator_and_executor_agree_on_io_blocks() {
+        let json = io_project();
+        let dag = parse_project_json(&json).expect("project must parse");
+        let simulated = crate::simulate_validated_dag(&dag).expect("simulation must run");
+        let plan = build_control_plan(&dag).expect("plan must build");
+        let executed = crate::exec::run(&plan, 3).expect("execution must run");
+
+        // in-1 reads its default 0.25; gain-2 scales by 4; out-3 passes through.
+        for (index, node_id) in dag.topological_order.iter().enumerate() {
+            let expected = simulated
+                .values_by_node_id
+                .get(node_id)
+                .expect("every node is traced");
+            for (k, want) in expected.iter().take(3).enumerate() {
+                assert_eq!(
+                    executed.signals[index][k] as f64, *want,
+                    "node `{node_id}` step {k}: simulator and executor disagree"
+                );
+            }
+        }
+
+        let gain_slot = dag
+            .topological_order
+            .iter()
+            .position(|id| id.as_str() == "gain-2")
+            .expect("gain block");
+        assert_eq!(executed.signals[gain_slot][0], 1.0, "0.25 default x4 gain");
     }
 
     #[test]

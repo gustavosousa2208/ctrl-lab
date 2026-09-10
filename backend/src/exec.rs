@@ -239,6 +239,17 @@ impl PlanExecutor {
             }
 
             KernelId::Scope => self.input(block, 0, index)?,
+
+            // No link exists on a PC, and pretending otherwise would make a
+            // split project look like a numerical reference when it is not.
+            // The reference is the COMBINED, delay-augmented diagram - see
+            // .internal/specs/2026-09-10-io-blocks-design.md, decision 4.
+            // firmware/ctrl/host stubs identically, so a plan carrying these
+            // still grades bit-for-bit.
+            KernelId::Input => *p.first().ok_or_else(short)?,
+
+            // Passes through, so a scope downstream can watch what was sent.
+            KernelId::Output => self.input(block, 0, index)?,
         })
     }
 
