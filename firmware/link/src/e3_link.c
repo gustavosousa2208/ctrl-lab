@@ -28,9 +28,11 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/timing/timing.h>
 #include <string.h>
 
 #include "link_dma.h"
+#include "link_frame.h"
 #include "link_latch.h"
 #include "link_pkt.h"
 
@@ -85,6 +87,68 @@ static bool wait_for_seq(uint32_t want, struct ctrl_link_pkt *out, uint32_t *rx_
 }
 #endif /* LINK_INITIATOR */
 
+#ifdef LINK_INITIATOR
+/* What the instruments cost, before any of it is blamed on the link.
+ *
+ * The first decomposed run put 25.5 us into handing a packet to the transmit
+ * DMA and 25.7 us into noticing one had arrived - two operations with almost
+ * nothing in common, agreeing to three digits. Numbers that similar are rarely
+ * about the thing being measured, so this measures the measuring: the DWT
+ * counter, read through the timing API, timing the SysTick-backed clock the
+ * link path actually calls.
+ */
+static void measure_instrument_cost(void)
+{
+	const unsigned int reps = 1000;
+	struct ctrl_link_pkt scratch;
+	uint32_t scratch_cycle;
+	timing_t a, b;
+
+	timing_init();
+	timing_start();
+
+	a = timing_counter_get();
+	for (unsigned int i = 0; i < reps; i++) {
+		(void)k_cycle_get_32();
+	}
+	b = timing_counter_get();
+	printk("cost        k_cycle_get_32 %u cycles\n",
+	       (uint32_t)(timing_cycles_get(&a, &b) / reps));
+
+	a = timing_counter_get();
+	for (unsigned int i = 0; i < reps; i++) {
+		(void)link_dma_get_latest(&scratch, &scratch_cycle);
+	}
+	b = timing_counter_get();
+	printk("cost        link_dma_get_latest %u cycles\n",
+	       (uint32_t)(timing_cycles_get(&a, &b) / reps));
+
+	a = timing_counter_get();
+	for (unsigned int i = 0; i < reps; i++) {
+		(void)sys_clock_tick_get();
+	}
+	b = timing_counter_get();
+	printk("cost        sys_clock_tick_get %u cycles\n",
+	       (uint32_t)(timing_cycles_get(&a, &b) / reps));
+
+	/* The CPU half of link_dma_send: the copy into the nocache staging
+	 * buffer and the CRC over it. Whatever the send costs beyond this is
+	 * the driver arming the transmit DMA, and that subtraction is the
+	 * whole point of measuring it.
+	 */
+	memset(&scratch, 0, sizeof(scratch));
+	a = timing_counter_get();
+	for (unsigned int i = 0; i < reps; i++) {
+		link_frame_stamp(&scratch);
+	}
+	b = timing_counter_get();
+	printk("cost        stage+crc a packet %u cycles\n",
+	       (uint32_t)(timing_cycles_get(&a, &b) / reps));
+
+	timing_stop();
+}
+#endif /* LINK_INITIATOR */
+
 static void print_banner(const char *role)
 {
 	printk("\nctrl-lab link %s - stage E3, DMA receive\n", role);
@@ -105,8 +169,10 @@ static void print_link_stats(const char *who)
 	printk("%s slots=%u ok=%u bad=%u short=%u resync=%u realign=%u "
 	       "uart_err=%u rearm=%u\n", who, s.rx_slots, s.rx_ok, s.rx_bad,
 	       s.rx_short, s.resyncs, s.realigns, s.rx_errors, s.rx_restarts);
-	printk("%s tx_done=%u tx_rejected=%u rx_callback_worst=%u cycles\n", who,
-	       s.tx_done, s.tx_rejected, s.rx_worst_cycles);
+	printk("%s tx_done=%u tx_rejected=%u\n", who, s.tx_done, s.tx_rejected);
+	printk("%s rx_callback first=%u worst=%u mean=%u cycles (after the first)\n",
+	       who, s.rx_first_cycles, s.rx_worst_cycles,
+	       s.rx_slots > 1U ? (uint32_t)(s.rx_total_cycles / (s.rx_slots - 1U)) : 0U);
 }
 
 #ifdef LINK_RESPONDER
@@ -217,6 +283,8 @@ int main(void)
 
 	cycles_per_us = sys_clock_hw_cycles_per_sec() / 1000000U;
 
+	measure_instrument_cost();
+
 	struct ctrl_link_pkt pkt, echo;
 	uint32_t rx_cycle;
 
@@ -268,6 +336,21 @@ int main(void)
 	uint32_t tx_refused = 0, fault = 0, overrun = 0;
 	uint32_t rtt_best = UINT32_MAX, rtt_worst = 0;
 	uint64_t rtt_total = 0;
+
+	/* The round trip on its own is a number with nowhere to go. Split into
+	 * the three pieces that can actually be acted on:
+	 *
+	 *   setup   handing the packet to the transmit DMA - a copy into the
+	 *           nocache staging buffer, a CRC, and the driver reprogramming
+	 *           the stream.
+	 *   flight  send started to the arrival stamp the receive ISR wrote.
+	 *           This is the wire in both directions plus everything the far
+	 *           side did, and it is where a surprise would live.
+	 *   detect  arrival stamp to this loop noticing, which is the price of
+	 *           polling the latch instead of being called by it.
+	 */
+	uint32_t setup_best = UINT32_MAX, flight_best = UINT32_MAX, detect_best = UINT32_MAX;
+	uint64_t setup_total = 0, flight_total = 0, detect_total = 0;
 	int64_t skew = 0;
 	const uint32_t t_start = k_cycle_get_32();
 
@@ -291,6 +374,8 @@ int main(void)
 			continue;
 		}
 
+		const uint32_t t1 = k_cycle_get_32();
+
 		if (!wait_for_seq(k, &echo, &rx_cycle, PKT_TIMEOUT_US)) {
 			dropped++;
 			if (++consec_drop >= MAX_CONSEC_DROP) {
@@ -299,13 +384,25 @@ int main(void)
 			continue;
 		}
 
-		const uint32_t rtt = k_cycle_get_32() - t0;
+		const uint32_t t2 = k_cycle_get_32();
+		const uint32_t rtt = t2 - t0;
 
 		consec_drop = 0;
 		answered++;
 		rtt_best = MIN(rtt_best, rtt);
 		rtt_worst = MAX(rtt_worst, rtt);
 		rtt_total += rtt;
+
+		const uint32_t setup = t1 - t0;
+		const uint32_t flight = rx_cycle - t1;
+		const uint32_t detect = t2 - rx_cycle;
+
+		setup_best = MIN(setup_best, setup);
+		flight_best = MIN(flight_best, flight);
+		detect_best = MIN(detect_best, detect);
+		setup_total += setup;
+		flight_total += flight;
+		detect_total += detect;
 
 		/* The payload came back through two DMA controllers and two
 		 * CRCs. Checking it here is what makes "zero byte loss" a
@@ -353,6 +450,16 @@ int main(void)
 		       (uint32_t)((uint64_t)rtt_worst * 1000000000ULL / hz));
 		printk("wire_ns     %u both directions (%u bytes each way)\n", wire2,
 		       (unsigned int)CTRL_LINK_PKT_LEN);
+		printk("            min / mean, in ns:\n");
+		printk("  setup     %u / %u  handing it to the transmit DMA\n",
+		       (uint32_t)((uint64_t)setup_best * 1000000000ULL / hz),
+		       (uint32_t)(setup_total * 1000000000ULL / answered / hz));
+		printk("  flight    %u / %u  wire both ways plus the far side\n",
+		       (uint32_t)((uint64_t)flight_best * 1000000000ULL / hz),
+		       (uint32_t)(flight_total * 1000000000ULL / answered / hz));
+		printk("  detect    %u / %u  arrival stamp to this loop noticing\n",
+		       (uint32_t)((uint64_t)detect_best * 1000000000ULL / hz),
+		       (uint32_t)(detect_total * 1000000000ULL / answered / hz));
 
 		/* What is left after the wire is software: two DMA arm/complete
 		 * paths, two CRCs, the latch on each side, and the responder's

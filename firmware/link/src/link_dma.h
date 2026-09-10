@@ -37,7 +37,16 @@ struct link_dma_stats {
 	uint32_t rx_restarts;	/* times reception had to be re-armed */
 	uint32_t tx_done;	/* completed transmits */
 	uint32_t tx_rejected;	/* sends refused because one was in flight */
-	uint32_t rx_worst_cycles; /* worst observed cost of the receive callback */
+	/* Cost of the receive callback, in cycles. The first call is kept apart
+	 * from the rest because it is not the same measurement: it runs with a
+	 * cold I-cache and a CRC table nothing has touched yet, and reporting
+	 * it as the worst case would describe a startup transient as if it
+	 * were the steady state. Both are worth knowing; conflating them is
+	 * not.
+	 */
+	uint32_t rx_first_cycles;
+	uint32_t rx_worst_cycles;	/* after the first */
+	uint64_t rx_total_cycles;	/* after the first, for the mean */
 };
 
 /* Arms reception. Must be called before any packet can arrive; the caller

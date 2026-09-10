@@ -194,8 +194,13 @@ static void rx_ready(const uint8_t *buf)
 	 * number this stage has to report rather than assume.
 	 */
 	cost = k_cycle_get_32() - cycle;
-	if (cost > stats.rx_worst_cycles) {
-		stats.rx_worst_cycles = cost;
+	if (stats.rx_slots == 1U) {
+		stats.rx_first_cycles = cost;
+	} else {
+		if (cost > stats.rx_worst_cycles) {
+			stats.rx_worst_cycles = cost;
+		}
+		stats.rx_total_cycles += cost;
 	}
 }
 

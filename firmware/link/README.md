@@ -236,14 +236,87 @@ bash firmware/link/test/build.sh      # 42 checks, native
 
 ## E3 results
 
-**Not yet measured.** The application and both ends of the transport are
-written, built warning-free for both boards, and unit-tested where a host can
-reach — but no board has run this. The numbers below are the ones to fill in,
-and until they exist E3 has proven nothing on hardware:
+Measured 2026-09-10, F767 at 216 MHz and H743 at 240 MHz, 6 Mbaud, **10 kHz
+kernel tick running on both boards, D-cache on, and no `irq_lock()` anywhere.**
 
-- 10 000 packets, zero bad CRC, zero seq gaps, zero resyncs after the handshake
-- round trip, with the 106.7 us of wire time at 6 Mbaud subtracted
-- the receive callback's worst-case cost, which the build already measures into
-  `rx_worst_cycles` — the estimate it is being checked against is ~170 cycles
-  for the table CRC plus the 32-byte gather
-- accumulated clock skew across the burst, and its sign
+**Zero loss.** 10 000 packets out, 10 000 answered, and across the five runs of
+that afternoon the responder saw **51 915 packets with 0 bad frames, 0 sequence
+gaps, 0 resyncs, 0 realignments and 0 UART errors** — it was never reset, so
+its counters are cumulative and every run is in them. The payload is compared
+field by field on return, so that is a statement about bytes and not about
+frame counts.
+
+That is the E2 result inverted. The polled receive needed interrupts off for
+40 ms to survive one frame; this survives fifty thousand with them on.
+
+**Jitter is 88 ns.** The receive callback costs 1779 cycles on the F767, and
+the worst of 10 001 was 1798 — a spread of 19 cycles. For comparison, E1
+measured 78 ns of control-loop jitter and 5183 ns of tick jitter on the H743.
+The receive path adds essentially nothing to either.
+
+| | F767 @216 MHz | H743 @240 MHz |
+| --- | --- | --- |
+| receive callback, first call | 1779 cyc, 8236 ns | 1014 cyc, 4225 ns |
+| receive callback, mean after | 1779 cyc, 8236 ns | 921 cyc, 3838 ns |
+| receive callback, worst after | 1798 cyc, 8324 ns | 946 cyc, 3942 ns |
+| turnaround, receive to reply sent | — | 4228 cyc, 17 617 ns |
+
+### The round trip is 185 us and only 107 of it is wire
+
+This is the number that did not go where the plan expected, and finding out why
+took instrumenting rather than arguing. The initiator times three spans and
+reports them separately:
+
+| | min | what it is |
+| --- | --- | --- |
+| `setup` | 25 689 ns | handing the packet to the transmit DMA |
+| `flight` | 133 027 ns | the wire both ways, plus everything the far side did |
+| `detect` | 25 467 ns | the arrival stamp to the polling loop noticing |
+| **round trip** | **185 226 ns** | of which 106 666 ns is 64 bytes on the wire |
+
+`setup` and `detect` agreeing to three digits, for two operations with almost
+nothing in common, is what gave it away. Numbers that similar are rarely about
+the thing being measured — so the next build measured the instruments, and then
+the work inside each span:
+
+```
+cost        k_cycle_get_32 197 cycles          (912 ns)
+cost        link_dma_get_latest 67 cycles      (310 ns)
+cost        sys_clock_tick_get 397 cycles      (1838 ns)
+cost        stage+crc a packet 835 cycles      (3866 ns)
+```
+
+Which settles it by subtraction:
+
+- `setup` is 5549 cycles. The copy into the nocache staging buffer and the CRC
+  over it are 835 of them. **The remaining 4714 cycles — 21.8 us — are
+  `uart_tx` arming the DMA stream.**
+- `detect` is 5501 cycles. Our receive callback is 1779. **The remaining 3722 —
+  17.2 us — are the driver's own work in the same interrupt**: it releases the
+  buffer, calls `dma_reload` and `dma_start` to swap in the queued one, and
+  only then asks for the next.
+
+So the software half of the round trip is not framing, not CRC, and not the
+latch. It is **Zephyr's STM32 DMA driver reprogramming a stream, twice per
+packet per board.** Our own code — stage, CRC, gather, validate, publish —
+comes to 2614 cycles, 12.1 us, and 394 of those are the two `k_cycle_get_32()`
+calls the callback makes to measure itself.
+
+The plan's target of 4.0 us of software latency is not reachable this way, and
+no amount of tuning the framing will get near it. What would is **cyclic DMA**:
+the stream is programmed once and never reloaded, which removes both the arm
+and the swap. Zephyr's `uart_stm32` supports it and this build does not use it.
+That is bead `ctrl-lab-b7r.8`, and it matters for the real loop, where 40 us of stream
+reprogramming would be 40% of a 100 us tick.
+
+### Clock skew
+
+The two crystals differ, and the accumulator sees it: **-13 267 cycles over a
+2.02 s burst**, or -61 us, the F767's clock running short against the H743's
+tick count. Runs on the same afternoon gave -1627, -13 267, -23 112 and -27 629
+cycles, which is 0.8 to 14 ppm and drifts with temperature — as a pair of
+ordinary crystals should. `skew_gaps` was 0 every time, so every interval in
+every run was short enough to attribute.
+
+The sign is the useful part: it is stable, so the two boards can be told apart
+by which one runs long.
