@@ -154,6 +154,32 @@ rounds to learn. `bash firmware/link/test/build.sh` runs it natively over every
 starting misalignment, a corrupted frame, a packet containing four false
 magics, and a sequence-number wrap.
 
+## Two clocks, no shared timebase
+
+Nothing connects the two boards but three wires, so there is no common clock to
+compare against. What there is: the sender stamps its own control tick into
+every packet, and the receiver stamps the local cycle counter when the packet
+lands. Differencing both and subtracting gives, per tick, how many cycles this
+board counted against how many the sender's tick count predicts — and that
+accumulates into crystal drift. One cycle per tick at 216 MHz is 46 ppm, which
+is an ordinary pair of crystals and adds up to something visible in a second.
+
+Every subtraction in that path is modular `uint32_t` and only then read as
+signed. The cycle counter wraps every twenty seconds at 216 MHz and the tick
+counter wraps too, and there is no branch for either — which is the sort of
+claim that is worth a test rather than a comment, so
+[`test/test_latch.c`](test/test_latch.c) walks a measurement straight through
+`0xffffffe0 → 0x00000030` and requires 80 cycles, then repeats it with a real
+two-cycle error to prove the zero was arithmetic and not a swallowed result.
+
+The consumer distinguishes four outcomes, because a control loop has to: a new
+sample, a held one (zero-order hold, fine for a tick and a fault for six), more
+than one packet elapsed, and arithmetic that is no longer real. A non-finite
+payload is deliberately **not** held — a stale sample is survivable and a NaN
+is not, since it propagates into the controller state and never leaves. Every
+signal slot is checked, not just the ones `signal_count` declares, because the
+undeclared ones reach the hold too.
+
 ## Four boundary bugs, all found by instrumenting rather than guessing
 
 Every one of these looked like a rate or wiring problem. Each was a gap where

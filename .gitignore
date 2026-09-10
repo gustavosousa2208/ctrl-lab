@@ -27,6 +27,7 @@ frontend/vite.config.d.ts
 # Zephyr build trees live outside the repo entirely - see firmware/scripts/.
 firmware/ctrl/host/ctrl-host
 firmware/link/test/test-frame
+firmware/link/test/test-latch
 
 # Beads / Dolt files (added by bd init)
 .dolt/

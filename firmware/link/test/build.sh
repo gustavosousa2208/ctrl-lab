@@ -1,7 +1,7 @@
 #!/bin/bash
-# Build and run the link framing tests natively.
+# Build and run the link tests natively.
 #
-#   test/build.sh          -> ./test-frame, then runs it
+#   test/build.sh          -> ./test-frame and ./test-latch, then runs both
 #
 # Same floating-point flags as firmware/ctrl/host/build.sh, for the same
 # reason: the packet carries f32 signals and nothing in this build may be
@@ -16,12 +16,22 @@ cd "$(dirname "$0")"
 
 CC="${CC:-cc}"
 
-$CC -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter \
-    -ffp-contract=off -fno-fast-math \
-    -I../src -I../../ctrl/src \
-    -o test-frame \
+CFLAGS=(-std=c11 -O2 -Wall -Wextra -Wno-unused-parameter
+        -ffp-contract=off -fno-fast-math
+        -I../src -I../../ctrl/src)
+
+$CC "${CFLAGS[@]}" -o test-frame \
     test_frame.c ../src/link_frame.c ../../ctrl/src/dcp.c ../../ctrl/src/kernels.c
 
-echo "built $(pwd)/test-frame"
+$CC "${CFLAGS[@]}" -o test-latch \
+    test_latch.c ../src/link_latch.c
+
+echo "built $(pwd)/test-frame and $(pwd)/test-latch"
+
 echo
+echo "--- framing ---"
 ./test-frame
+
+echo
+echo "--- latch ---"
+./test-latch
