@@ -234,6 +234,114 @@ STM32H743 (Cortex-M7 at 240 MHz).
 The step figures are not comparable head to head — six blocks against three —
 but the H743's per-block speed advantage from the bring-up probe carries over.
 
+## Stage E3: a controller and a plant, on two boards, graded
+
+Measured 2026-09-10. **F767 runs the controller, H743 runs the plant**, signals
+crossing the link both ways, both boards free-running on their own crystals with
+no sync protocol. 401 ticks at 50 ms.
+
+| | project | runs on |
+| --- | --- | --- |
+| controller | `08-controller` | F767 — `r - y` → gain 2 → `u` |
+| plant | `09-plant` | H743 — `u` → `1/(s+1)` → `y` |
+| reference | `10-loop-reference` | the PC — **both halves in one diagram**, with an explicit `delay` block for the transport |
+
+The reference is the only thing this run can be compared against, and it is not
+either half's own simulation. Simulate `08-controller` alone and its `Input`
+reads its declared default for ever; the number means nothing. `POC-PLAN.md` is
+explicit that the exit criterion is agreement with *"a stage-C simulation of the
+delay-augmented diagram"*, and `firmware/scripts/compare-loop.py` is what does
+that comparison.
+
+**The result: max_abs_error 4.98e-10, RMS 3.3e-10, zero samples above the f32
+noise floor.**
+
+```
+signal                  max_abs_error   at k           rms   verdict
+input-2 -> delay-y          4.984e-10     26     3.301e-10   below floor
+sum-3   -> sum-3            4.984e-10     26     3.299e-10   below floor
+gain-4  -> gain-4           4.928e-10     21     2.975e-10   below floor
+
+drift       max|error| in `input-2` per slice of the run
+            k     0-100    4.984e-10
+            k   100-400    3.488e-10
+
+above floor 0 of 401 samples
+VERDICT     PASS - worst signal 4.984e-10 against a 5.8e-06 floor
+```
+
+| | controller (F767) | plant (H743) |
+| --- | --- | --- |
+| deadlines missed | 0 of 401 | 0 of 401 |
+| step | 43 555 / 44 231 / 44 268 ns | 12 745 / 13 670 / 15 666 ns |
+| tick jitter | 44 cycles, 203 ns | 209 cycles, 870 ns |
+| link | `took=389 held=12 empty=0 skipped=0` | `took=388 held=0 empty=13 skipped=0` |
+| | `sent=401 dropped=0` | `sent=401 dropped=0` |
+
+`skipped` counts sequence gaps: **no packet was lost in either direction.** The
+plant's `empty=13` is the startup gap — it was reset first and ran 13 ticks
+before the controller began sending.
+
+### The transport is one sample of delay, not two, and that was measured
+
+The first reference modelled two: one on `u` going out and one on `y` coming
+back, which is what the physical picture suggests. The board disagreed by
+exactly one sample — board `y[12]` equalled reference `y[13]`, all the way
+through the transient.
+
+The board is right. Both boards tick at 50 ms and the link's one-way cost is
+about 89 us, so when the plant's tick falls *after* the controller's within the
+same 50 ms window, the plant consumes `u[k]` and produces `y` inside that same
+window, and the controller reads it at `k+1`. One sample, not two.
+
+That is a **phase-dependent** result, not a structural one. Had the plant's tick
+led the controller's instead, the answer would be two. `POC-PLAN.md` guarantees
+exactly one sample by construction — but its construction is SPI full-duplex,
+where `A` transmits `u[k]` and simultaneously receives `y[k-1]` with no
+dependence on interrupt latency. This link is UART and has no such symmetry, so
+here the count is an empirical property of the relative phase.
+
+### What the 12 holds mean, and the caveat they carry
+
+`held=12` is the controller finding no *new* packet and reusing the previous
+sample. It is not loss. The two crystals differ by 0.8-14 ppm (measured in
+`firmware/link/README.md`), which over a 20 s run is about 280 us of relative
+drift — 0.56% of one 50 ms tick. That is enough to walk the plant's send
+instant across the controller's sample instant once, and the twelve holds are
+that crossing.
+
+**None of them landed in the transient**, which is why the error stays at 1e-10
+throughout. A hold during the step response would have shifted `y` by one
+sample and shown up as ~1e-1. So this run does not demonstrate that the loop is
+robust to a phase slip while something is happening — it demonstrates that the
+slip exists, that it is rare, and that this run was not hit by one. Quantifying
+the error when it *is* hit needs a run seeded to slip during the transient, and
+is not claimed here.
+
+### Reproducing it
+
+```bash
+VARIANT=link bash firmware/scripts/build.sh ctrl nucleo_f767zi -p always \
+  -- -DCTRL_LINK=y -DCTRL_PLAN=08-controller
+VARIANT=link EXTRA_CONF=rtt.conf bash firmware/scripts/build.sh ctrl mini_stm32h743 \
+  -p always -- -DCTRL_LINK=y -DCTRL_PLAN=09-plant
+
+west flash --runner jlink -d ~/ctrl-lab-build/ctrl/mini_stm32h743-link
+VARIANT=link bash firmware/scripts/flash.sh ctrl nucleo_f767zi
+
+# Both boards must start FROM REST. Flashing leaves the controller running, and
+# a controller that is still driving the plant when the plant restarts hands the
+# next run a plant that is already excited - which showed up as a 0.6 error at
+# k=0 and looked exactly like a modelling bug. Let the previous run finish
+# first, then reset the plant, then reset and capture the controller.
+python3 firmware/scripts/console.py --timeout 30 --out /dev/null   # let it finish
+JLinkExe ... -CommanderScript reset.jlink                          # plant from rest
+python3 firmware/scripts/console.py --timeout 45 --out run.txt     # controller
+
+python3 firmware/scripts/compare-loop.py test-projects/10-loop-reference.f32.csv \
+  run.txt --board test-projects/08-controller.f32.csv
+```
+
 ## The loop closes across two boards
 
 Measured 2026-09-10. `test-projects/07-link-loop` on **both** boards at once,

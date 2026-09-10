@@ -1,0 +1,193 @@
+{
+  "version": 1,
+  "kind": "ctrl-lab-project",
+  "generatedAt": "2026-09-10T00:00:00.000Z",
+  "title": "controller",
+  "simulation": {
+    "endTime": 20.0,
+    "stepSize": 0.05
+  },
+  "nodes": [
+    {
+      "id": "step-1",
+      "type": "step",
+      "label": "step-1",
+      "role": "step-01",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "properties": {
+        "initialValue": "0.0",
+        "finalValue": "1.0",
+        "stepTime": "0.5",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "input-2",
+      "type": "input",
+      "label": "input-2",
+      "role": "input-01",
+      "position": {
+        "x": 0,
+        "y": 96
+      },
+      "properties": {
+        "channel": "0",
+        "default": "0.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "sum-3",
+      "type": "sum",
+      "label": "sum-3",
+      "role": "sum-01",
+      "position": {
+        "x": 144,
+        "y": 48
+      },
+      "properties": {
+        "equation": "+ -",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "gain-4",
+      "type": "gain",
+      "label": "gain-4",
+      "role": "gain-01",
+      "position": {
+        "x": 288,
+        "y": 48
+      },
+      "properties": {
+        "gain": "2",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "output-5",
+      "type": "output",
+      "label": "output-5",
+      "role": "output-01",
+      "position": {
+        "x": 432,
+        "y": 48
+      },
+      "properties": {
+        "channel": "0",
+        "dataType": "f32"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "sourceNodeId": "step-1",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-3",
+      "targetPortId": "a"
+    },
+    {
+      "id": "e2",
+      "sourceNodeId": "input-2",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-3",
+      "targetPortId": "b"
+    },
+    {
+      "id": "e3",
+      "sourceNodeId": "sum-3",
+      "sourcePortId": "out",
+      "targetNodeId": "gain-4",
+      "targetPortId": "in"
+    },
+    {
+      "id": "e4",
+      "sourceNodeId": "gain-4",
+      "sourcePortId": "out",
+      "targetNodeId": "output-5",
+      "targetPortId": "in"
+    }
+  ],
+  "graphIndex": {
+    "nodesById": {
+      "step-1": {
+        "type": "step",
+        "role": "step-01",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "input-2": {
+        "type": "input",
+        "role": "input-01",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "sum-3": {
+        "type": "sum",
+        "role": "sum-01",
+        "inputPortIds": [
+          "a",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "gain-4": {
+        "type": "gain",
+        "role": "gain-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "output-5": {
+        "type": "output",
+        "role": "output-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": []
+      }
+    },
+    "incomingEdgesByNodeId": {
+      "step-1": [],
+      "input-2": [],
+      "sum-3": [
+        "e1",
+        "e2"
+      ],
+      "gain-4": [
+        "e3"
+      ],
+      "output-5": [
+        "e4"
+      ]
+    },
+    "outgoingEdgesByNodeId": {
+      "step-1": [
+        "e1"
+      ],
+      "input-2": [
+        "e2"
+      ],
+      "sum-3": [
+        "e3"
+      ],
+      "gain-4": [
+        "e4"
+      ],
+      "output-5": []
+    }
+  }
+}

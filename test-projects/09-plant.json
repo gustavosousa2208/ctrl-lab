@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "kind": "ctrl-lab-project",
+  "generatedAt": "2026-09-10T00:00:00.000Z",
+  "title": "plant",
+  "simulation": {
+    "endTime": 20.0,
+    "stepSize": 0.05
+  },
+  "nodes": [
+    {
+      "id": "input-1",
+      "type": "input",
+      "label": "input-1",
+      "role": "input-01",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "properties": {
+        "channel": "0",
+        "default": "0.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "tf-2",
+      "type": "transferFunction",
+      "label": "tf-2",
+      "role": "tf-01",
+      "position": {
+        "x": 144,
+        "y": 0
+      },
+      "properties": {
+        "numerator": "1",
+        "denominator": "1 1",
+        "stateName": "y",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "output-3",
+      "type": "output",
+      "label": "output-3",
+      "role": "output-01",
+      "position": {
+        "x": 288,
+        "y": 0
+      },
+      "properties": {
+        "channel": "0",
+        "dataType": "f32"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "sourceNodeId": "input-1",
+      "sourcePortId": "out",
+      "targetNodeId": "tf-2",
+      "targetPortId": "in"
+    },
+    {
+      "id": "e2",
+      "sourceNodeId": "tf-2",
+      "sourcePortId": "out",
+      "targetNodeId": "output-3",
+      "targetPortId": "in"
+    }
+  ],
+  "graphIndex": {
+    "nodesById": {
+      "input-1": {
+        "type": "input",
+        "role": "input-01",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "tf-2": {
+        "type": "transferFunction",
+        "role": "tf-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "output-3": {
+        "type": "output",
+        "role": "output-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": []
+      }
+    },
+    "incomingEdgesByNodeId": {
+      "input-1": [],
+      "tf-2": [
+        "e1"
+      ],
+      "output-3": [
+        "e2"
+      ]
+    },
+    "outgoingEdgesByNodeId": {
+      "input-1": [
+        "e1"
+      ],
+      "tf-2": [
+        "e2"
+      ],
+      "output-3": []
+    }
+  }
+}
