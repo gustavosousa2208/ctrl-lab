@@ -110,6 +110,50 @@ would simply never be written. That is the exact opposite of the rule for the
 control pools in [`firmware/BRINGUP.md`](../BRINGUP.md), which want DTCM — the
 link buffers must not follow them there.
 
+## Framing: a slot is a packet, and the grid can be moved
+
+The receive ring is four buffers of 32 bytes, which is exactly one packet, so
+"a buffer filled" and "a packet arrived" are the same event. There is no length
+field to parse and no delimiter to scan for, and when the stream is in sync the
+DMA's buffer swap lands in the idle gap between packets — which matters,
+because the driver reloads the DMA in software and the USART holds only one
+byte while it does. At 6 Mbaud that is 1.67 us of slack.
+
+**Four slots, and four is the minimum.** The driver holds two buffers at once
+and asks for slot *n+2* from inside the interrupt that reports slot *n*.
+Reassembling a packet that straddles a boundary also needs slot *n-1*. With
+three slots, *n-1* and *n+2* are the same buffer and the DMA overwrites the
+bytes being read.
+
+**A stream can start mid-packet**, which is what a reset of one board while the
+other is sending produces. The receiver tracks where in a slot a packet *ends*
+— 32 when packets and slots coincide, less when they do not — and recovers by
+moving that boundary, never by stopping the DMA. Candidates are found by
+scanning for the magic in the two-slot window and confirmed by CRC, at most
+three CRCs per attempt, because a two-byte magic will occasionally appear
+inside float payload.
+
+That recovers correctness. It does **not** recover latency, and the host tests
+in [`test/`](test/) are what made that visible: a packet ending part-way into a
+slot is not handed over until the slot fills, so its delivery waits for the
+first bytes of the *next* packet. On this link that is a whole control tick,
+every tick, silently — precisely the kind of error E3 exists to measure and
+would instead have absorbed.
+
+So the buffer grid gets moved to match. The DMA's notion of a boundary is only
+"this buffer is full", so handing the driver a single odd-sized buffer shifts
+every boundary after it. To move the grid forward by *K* bytes the odd buffer
+must be *K* modulo 32, and `32 + K` is used rather than `K`: it asks for the
+same shift while giving the software reload far more time than a two-microsecond
+buffer would. It costs the one packet that lands in it.
+
+The framing is plain C over a byte ring, deliberately separated from the driver
+plumbing ([`src/link_frame.c`](src/link_frame.c)), because on a board a framing
+bug is indistinguishable from a wiring fault — as the section below cost four
+rounds to learn. `bash firmware/link/test/build.sh` runs it natively over every
+starting misalignment, a corrupted frame, a packet containing four false
+magics, and a sequence-number wrap.
+
 ## Four boundary bugs, all found by instrumenting rather than guessing
 
 Every one of these looked like a rate or wiring problem. Each was a gap where

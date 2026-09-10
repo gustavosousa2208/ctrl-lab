@@ -34,7 +34,8 @@ endif()
 message(STATUS "link: ${BOARD} as ${LINK_ROLE}, ${LINK_UART} at ${LINK_BAUD} baud")
 
 target_include_directories(app PRIVATE src ../ctrl/src)
-target_sources(app PRIVATE src/main.c ../ctrl/src/dcp.c ../ctrl/src/trace.c)
+target_sources(app PRIVATE src/main.c src/link_dma.c src/link_frame.c
+               ../ctrl/src/dcp.c ../ctrl/src/trace.c)
 
 # Same reason as firmware/ctrl: never let the compiler contract a*b+c into an
 # FMA. Nothing here is float-heavy, but the CRC and framing code is shared with

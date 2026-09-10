@@ -22,9 +22,11 @@ frontend/vite.config.d.ts
 .vite-dev.err
 .vite-dev.log
 
-# The natively-built firmware host harness (firmware/ctrl/host/build.sh).
+# The natively-built firmware host harness (firmware/ctrl/host/build.sh) and
+# the link framing tests (firmware/link/test/build.sh).
 # Zephyr build trees live outside the repo entirely - see firmware/scripts/.
 firmware/ctrl/host/ctrl-host
+firmware/link/test/test-frame
 
 # Beads / Dolt files (added by bd init)
 .dolt/
