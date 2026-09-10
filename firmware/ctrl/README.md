@@ -234,6 +234,63 @@ STM32H743 (Cortex-M7 at 240 MHz).
 The step figures are not comparable head to head — six blocks against three —
 but the H743's per-block speed advantage from the bring-up probe carries over.
 
+## The loop closes across two boards
+
+Measured 2026-09-10. `test-projects/07-link-loop` on **both** boards at once,
+built with `-DCTRL_LINK=y`, 401 ticks at 50 ms.
+
+The fixture is deliberately one a single board cannot solve. Each board
+computes `out = 0.5 x (1 + in)`, writes `out` to link channel 0, and reads the
+other board's `out` back on the same channel. The fixed point of
+`x = 0.5(1 + x)` is **1**, and neither board can get there alone: simulate the
+project on the PC and the `Input` reads its declared default of 0, so the
+output sits at 0.5 for ever.
+
+Both boards converged to **1.000000**, and stayed there for the full 20 s.
+
+```
+  k     t          constant   input      sum        gain       output
+  0      0.000000   1.000000   0.999996   1.999996   0.999998   0.999998
+  2      0.100000   1.000000   1.000000   2.000000   1.000000   1.000000
+  400   20.000000   1.000000   1.000000   2.000000   1.000000   1.000000
+```
+
+Against the link-less reference the grader reports **FAIL, max error 1.000 on
+`sum-3`** — which is the result, not a problem. `sum-3` is `1 + input`; the
+simulator has `input = 0` and the pair of boards have `input = 1`. The whole
+claim of this stage is that the board's answer depends on the *other* board,
+and that error of exactly 1.000 is the shape of it.
+
+| | |
+| --- | --- |
+| link | `took=389 held=12 empty=0 skipped=0` |
+| | `sent=401 dropped=0` |
+| deadlines | 0 missed of 401 ticks |
+| step | min 43 194 ns, mean 43 870, max 43 902 |
+| tick jitter | 44 cycles p-p, 203 ns |
+
+**Zero packets lost** over 401 ticks — `skipped` counts sequence gaps, and
+there were none. `held=12` is the interesting number: twelve ticks out of 401
+found no *new* packet and held the previous sample. That is not loss, it is the
+two crystals drifting past each other. The boards are free-running on their own
+clocks with no sync protocol, so their 50 ms ticks slide relative to one
+another and about 3% of samples land in the gap before the peer's packet
+arrives. E3 measured that drift directly as 0.8 to 14 ppm; this is the same
+fact seen from the control loop.
+
+**The step got 25 us longer.** It was 13–19 us on this fixture class before;
+it is 43.9 us now. That is not the framing or the CRC — E3 decomposed it — it
+is `uart_tx` arming the transmit DMA, measured there at 21.8 us, plus the
+receive side. At a 50 ms tick that is 0.09% of the period and nobody cares. At
+the 100 us tick stage E3 wants, it would be 44% of it, which is
+[`ctrl-lab-b7r.8`](../../.internal/specs/2026-09-10-io-blocks-design.md).
+
+One thing this run does **not** establish: that the transport delay is exactly
+one sample. At 50 ms per tick the link's ~89 us one-way is 0.2% of the period,
+so it is one sample by an enormous margin and the question does not arise. It
+arises at 10 kHz, and `POC-PLAN.md` guarantees one sample by construction only
+for SPI full-duplex, which this is not.
+
 ### On the H743, the D-cache buys throughput and costs determinism
 
 The H743 first measured **5183 ns of tick jitter against the F767's 78 ns** — 66x

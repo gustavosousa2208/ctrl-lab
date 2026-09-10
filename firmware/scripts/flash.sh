@@ -5,6 +5,13 @@
 #
 # e.g.  flash.sh ctrl
 #       flash.sh ctrl nucleo_f767zi caches-off
+#       VARIANT=caches-off flash.sh ctrl nucleo_f767zi     # same thing
+#
+# The VARIANT environment variable works too, because build.sh takes it that
+# way and only that way. Passing it as an env var here used to be silently
+# ignored, which flashes the DEFAULT build over the variant you just built and
+# then reports success - the board runs the wrong firmware and says so only if
+# you happen to read its banner.
 #
 # The companion to flash.ps1, which does the same job from Windows by reaching
 # into a WSL build tree. This one is simpler because the build and the board are
@@ -17,7 +24,7 @@ set -e
 
 APP="${1:?usage: flash.sh <app> [board] [variant]}"
 BOARD="${2:-nucleo_f767zi}"
-VARIANT="${3:-}"
+VARIANT="${3:-${VARIANT:-}}"
 
 # STM32_Programmer_CLI is what the runner shells out to.
 if ! command -v STM32_Programmer_CLI >/dev/null 2>&1; then

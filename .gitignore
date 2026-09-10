@@ -38,3 +38,6 @@ firmware/link/test/test-latch
 
 # git worktrees, which bd creates for feature work
 .worktrees/
+
+# Python bytecode, from importing firmware/scripts/*.py as modules
+__pycache__/
