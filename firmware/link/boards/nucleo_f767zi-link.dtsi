@@ -1,0 +1,52 @@
+/*
+ * The link end of the F767, shared by every application that talks over it.
+ *
+ * Included rather than duplicated: firmware/ctrl needs exactly these nodes to
+ * bind an Input or Output block to the link, and a second copy of the DMA
+ * stream numbers is a second place to get them wrong. The DTCM selection in
+ * each app's own overlay stays duplicated, because that is one line of settled
+ * board fact; this is not.
+ */
+
+/*
+ * The link end of the F767: usart6, which is the Arduino header's serial.
+ *
+ *   D1 = PG14 = USART6_TX  ->  H743 PA10 (RX)
+ *   D0 = PG9  = USART6_RX  <-  H743 PA9  (TX)
+ *   GND <-> GND
+ *
+ * usart6 is on APB2 at 108 MHz, twice the clock of the APB1 UARTs, which is why
+ * it is the link rather than a spare usart2. It is already enabled in the board
+ * .dts at 115200; the generated link-baud.overlay overrides the speed.
+ *
+ * The console stays on usart3 (ST-Link VCP), so measurements print over a
+ * channel that is not the one being measured.
+ */
+
+/ {
+	aliases {
+		link-uart = &usart6;
+	};
+};
+
+/*
+ * DMA for the link UART. RM0410 table 28: DMA2 channel 5 carries USART6_TX on
+ * streams 6 and 7, and USART6_RX on streams 1 and 2. Nothing else in this
+ * application uses DMA2, so the first of each pair is free.
+ *
+ * The fourth cell is the FIFO threshold. It is inert here - dma_stm32 only
+ * turns the stream FIFO on when a burst is configured (stm32_dma_configure ->
+ * stm32_dma_check_fifo_mburst) and the async UART driver transfers single
+ * bytes, so the stream runs in direct mode. It is spelled out anyway because
+ * the binding requires four cells and because this is what upstream's own
+ * async_api sample passes on the F7.
+ */
+&usart6 {
+	dmas = <&dma2 6 5 STM32_DMA_PERIPH_TX STM32_DMA_FIFO_FULL>,
+	       <&dma2 1 5 STM32_DMA_PERIPH_RX STM32_DMA_FIFO_FULL>;
+	dma-names = "tx", "rx";
+};
+
+&dma2 {
+	status = "okay";
+};

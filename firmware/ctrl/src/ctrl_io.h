@@ -27,6 +27,24 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* The tick's edges, so an implementation can be transactional.
+ *
+ * Without these a channel would be sampled once per READ, and two Input blocks
+ * on one channel could straddle the interrupt that publishes a new packet -
+ * seeing two different samples inside a single tick. `begin` takes one snapshot
+ * of everything inbound and every read for the rest of the tick is served from
+ * it.
+ *
+ * `end` is the other half: writes accumulate, and this publishes them together.
+ * A link that sent one packet per Output block would put two packets on the
+ * wire for a two-channel plan and halve the rate it can sustain.
+ *
+ * The runtime calls `begin` before pass 1 and `end` between the passes. An
+ * implementation with no channels leaves both empty.
+ */
+void ctrl_io_begin_tick(void);
+void ctrl_io_end_tick(void);
+
 /* `role` is an enum ctrl_channel_role; `index` is the channel within it. Both
  * come from a validated io_binding, so an implementation may assume the role is
  * one it advertises and need only bounds-check the index.

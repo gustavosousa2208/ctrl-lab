@@ -15,6 +15,14 @@
 
 #include "ctrl_io.h"
 
+void ctrl_io_begin_tick(void)
+{
+}
+
+void ctrl_io_end_tick(void)
+{
+}
+
 bool ctrl_io_read(uint16_t role, uint16_t index, float *out)
 {
 	(void)role;

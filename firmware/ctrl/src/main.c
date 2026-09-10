@@ -27,6 +27,9 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/timing/timing.h>
 
+#ifdef CTRL_LINK
+#include "ctrl_io_link.h"
+#endif
 #include "dcp.h"
 #include "kernels.h"
 #include "plan_blob.h"
@@ -354,6 +357,26 @@ int main(void)
 	timing_init();
 	timing_start();
 
+#ifdef CTRL_LINK
+	/* Before arming, so an Input block never runs a tick against a link
+	 * that is not listening. A plan with io_bindings on a board whose link
+	 * failed to come up would read its defaults and produce a trace that
+	 * looks fine and means nothing.
+	 */
+	if (!ctrl_io_link_init()) {
+		printk("FAIL: link did not come up\n");
+		return 0;
+	}
+	printk("link        bound, %u io_bindings\n", plan.n_io_bindings);
+#else
+	if (plan.n_io_bindings > 0) {
+		printk("note        %u io_bindings, but no channels are bound in this\n"
+		       "            build - every Input reads its declared default.\n"
+		       "            Rebuild with -DCTRL_LINK=y to use the link.\n",
+		       plan.n_io_bindings);
+	}
+#endif
+
 	ctrl_arm(&runtime, &plan);
 
 	const uint32_t completed = run_plan();
@@ -528,6 +551,19 @@ int main(void)
 		       (uint32_t)((uint64_t)worst * 1000000000U / hz * 100U /
 				  (plan.base_ts_ns ? plan.base_ts_ns : 1)));
 	}
+
+#ifdef CTRL_LINK
+	{
+		struct ctrl_io_link_stats io;
+
+		ctrl_io_link_stats(&io);
+		printk("\nlink        took=%u held=%u empty=%u skipped=%u\n",
+		       io.packets_taken, io.ticks_holding, io.ticks_without_packet,
+		       io.packets_skipped);
+		printk("            sent=%u dropped=%u\n", io.packets_sent,
+		       io.packets_dropped);
+	}
+#endif
 
 	printk("\ndone\n");
 

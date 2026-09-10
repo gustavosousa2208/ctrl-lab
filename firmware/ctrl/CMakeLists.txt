@@ -25,6 +25,39 @@ set(CTRL_CONSOLE_BAUD "921600" CACHE STRING "usart3 console baud rate")
 configure_file(console-baud.overlay.in ${CMAKE_CURRENT_BINARY_DIR}/console-baud.overlay @ONLY)
 list(APPEND EXTRA_DTC_OVERLAY_FILE ${CMAKE_CURRENT_BINARY_DIR}/console-baud.overlay)
 
+# The link's devicetree, when -DCTRL_LINK=y asks for it. Above find_package()
+# for the same reason the console overlay is: Zephyr reads the devicetree in
+# there, so anything appended afterwards is appended too late and the only
+# symptom is a missing alias much further down the build.
+#
+# INCLUDED from firmware/link rather than copied. The DMA stream numbers are a
+# settled board fact and a second copy is a second place to get them wrong; the
+# DTCM selection stays duplicated in boards/ because that really is one line.
+if(CTRL_LINK)
+  if(BOARD STREQUAL "nucleo_f767zi")
+    set(LINK_UART "usart6")
+  elseif(BOARD STREQUAL "mini_stm32h743")
+    set(LINK_UART "usart1")
+  else()
+    message(FATAL_ERROR "ctrl: no link UART known for board '${BOARD}'")
+  endif()
+
+  # Applied here rather than left to the caller. Without it the build still
+  # succeeds and CONFIG_UART_ASYNC_API is simply off, so uart_callback_set
+  # fails at runtime on a board that looks correctly configured - which is the
+  # kind of quiet wrong that costs an afternoon. ctrl_io_link.c refuses to
+  # compile without it as the second half of the same guard.
+  list(APPEND EXTRA_CONF_FILE ${CMAKE_CURRENT_LIST_DIR}/link.conf)
+
+  set(CTRL_LINK_BAUD "6000000" CACHE STRING "link UART baud rate")
+  set(LINK_BAUD ${CTRL_LINK_BAUD})
+  configure_file(../link/link-baud.overlay.in
+                 ${CMAKE_CURRENT_BINARY_DIR}/link-baud.overlay @ONLY)
+  list(APPEND EXTRA_DTC_OVERLAY_FILE
+       ${CMAKE_CURRENT_LIST_DIR}/../link/boards/${BOARD}-link.dtsi
+       ${CMAKE_CURRENT_BINARY_DIR}/link-baud.overlay)
+endif()
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(ctrl_lab_control_runtime)
 
@@ -63,9 +96,29 @@ target_sources(app PRIVATE
   src/kernels.c
   src/runtime.c
   src/trace.c
-  # No channels bound yet - see the file, and ctrl-lab-ri0.3 for the link one.
-  src/ctrl_io_none.c
 )
+
+# Bind the control core's Input/Output blocks to the MCU-to-MCU link:
+#   west build ... -- -DCTRL_LINK=y -DCTRL_LINK_BAUD=6000000
+#
+# Off by default, and the default is not laziness. Without it an Input block
+# reads the `default` its parameter declares, which is exactly what
+# backend/src/exec.rs evaluates it to - so a plan carrying io blocks still
+# grades bit-for-bit against the reference on a board with nothing wired to it.
+# Turning this on is what makes the board's answer depend on another board.
+if(CTRL_LINK)
+  target_include_directories(app PRIVATE ../link/src)
+  target_sources(app PRIVATE
+    src/ctrl_io_link.c
+    ../link/src/link_dma.c
+    ../link/src/link_frame.c
+  )
+  target_compile_definitions(app PRIVATE CTRL_LINK=1)
+  message(STATUS "ctrl: link bound on ${LINK_UART} at ${CTRL_LINK_BAUD} baud")
+else()
+  target_sources(app PRIVATE src/ctrl_io_none.c)
+  message(STATUS "ctrl: no channels bound; Input blocks read their defaults")
+endif()
 
 # The single most important flag in this project.
 #

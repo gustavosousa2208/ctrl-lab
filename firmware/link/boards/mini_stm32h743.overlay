@@ -1,24 +1,11 @@
-/*
- * The link end of the H743: usart1 on PA9/PA10, which the board leaves free.
- *
- *   PA9  = USART1_TX  ->  F767 D0 (PG9, RX)
- *   PA10 = USART1_RX  <-  F767 D1 (PG14, TX)
- *   GND <-> GND
- *
- * usart1 is on APB2 at 120 MHz, the fastest peripheral bus here. PB6/PB7 would
- * also carry usart1 but PB6 is QuadSPI NCS for the onboard NOR flash; PB14/PB15
- * are the clean alternative if PA9 ever turns out to be tied to USB VBUS on a
- * given board revision.
- *
- * gcd(108, 120) = 12, so 1/2/3/4/6 Mbaud are exact on both ends with zero baud
- * error. See firmware/link/README.md.
+/* The link probe's own overlay. The link itself is in the shared .dtsi, which
+ * firmware/ctrl includes too; the DTCM selection stays here because it is a
+ * per-application choice.
  */
 
-/ {
-	aliases {
-		link-uart = &usart1;
-	};
+#include "mini_stm32h743-link.dtsi"
 
+/ {
 	chosen {
 		/* Same reason as every other application here: the board .dts
 		 * declares dtcm but never selects it, so without this the
@@ -26,45 +13,4 @@
 		 */
 		zephyr,dtcm = &dtcm;
 	};
-};
-
-&usart1 {
-	pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pa10>;
-	pinctrl-names = "default";
-	current-speed = <1000000>;
-	status = "okay";
-
-	/*
-	 * DMA for the link. The H7 routes requests through DMAMUX rather than
-	 * hardwiring them to streams, so the numbers mean something different
-	 * than on the F767: the first cell is a DMAMUX channel (free choice)
-	 * and the second is the request line ID (fixed by the peripheral).
-	 * RM0433 table 121: usart1_rx_dma is 41 and usart1_tx_dma is 42.
-	 *
-	 * DMAMUX1 channels 0-7 are DMA1 streams 0-7 and 8-15 are DMA2's, so
-	 * channels 0 and 1 put both directions on DMA1 and leave DMA2 off.
-	 */
-	dmas = <&dmamux1 0 42 STM32_DMA_PERIPH_TX>,
-	       <&dmamux1 1 41 STM32_DMA_PERIPH_RX>;
-	dma-names = "tx", "rx";
-};
-
-/*
- * DMA1 only: nothing else here needs a stream, and dmamux_stm32 resolves the
- * channel-to-controller table at build time, so a disabled DMA2 costs nothing
- * beyond the channels that would have mapped to it.
- *
- * The ring these streams write into must stay out of DTCM. DMA1 lives in the
- * D2 domain and cannot reach the D1 core-coupled memories at all; sram0 on
- * this board is AXI SRAM at 0x24000000, which it reaches through the D2-to-D1
- * bus matrix. That is the opposite of the rule for the control pools in
- * firmware/BRINGUP.md, and the reason link buffers must not follow them into
- * dtcm.
- */
-&dma1 {
-	status = "okay";
-};
-
-&dmamux1 {
-	status = "okay";
 };

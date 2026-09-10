@@ -154,6 +154,7 @@ bool ctrl_step(struct ctrl_runtime *rt)
 	 * holding its last good value, which is a zero-order hold - see
 	 * ctrl_io.h.
 	 */
+	ctrl_io_begin_tick();
 	io_read_inputs(plan);
 
 	/* Pass 1: every block's output. */
@@ -195,6 +196,7 @@ bool ctrl_step(struct ctrl_runtime *rt)
 	 * pass of latency on a link that has none to spare.
 	 */
 	io_write_outputs(plan);
+	ctrl_io_end_tick();
 
 	/* Pass 2: every block's state update, reading the signals pass 1 just
 	 * produced. This is where a strictly-proper block finally sees u[k].
