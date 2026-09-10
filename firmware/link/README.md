@@ -64,6 +64,52 @@ deaf for 40 ms. The real answer there is DMA receive or the H7's USART FIFO,
 which take the deadline off the CPU entirely. This build proves the wire and the
 framing are sound; it does not propose the mechanism.
 
+## The DMA receive path, and where its buffers are allowed to live
+
+Stage E3 answers the question the section above leaves open: **DMA receive**,
+through Zephyr's `CONFIG_UART_ASYNC_API`. Both link UARTs now carry `dmas`
+bindings, and the two boards spell the same thing differently.
+
+| | controller | tx | rx |
+| --- | --- | --- | --- |
+| F767 `usart6` | DMA2, hardwired | stream 6, channel 5 | stream 1, channel 5 |
+| H743 `usart1` | DMA1 via DMAMUX1 | channel 0, request 42 | channel 1, request 41 |
+
+On the F767 the stream *is* the request: RM0410 table 28 fixes USART6_TX to
+DMA2 streams 6 and 7 and USART6_RX to streams 1 and 2, so the only free choice
+is which of each pair. On the H743 the DMAMUX breaks that link — the channel is
+a free choice and the request ID (RM0433 table 121) is the fixed part.
+
+**The buffers must be in non-cacheable memory, and the driver enforces it.**
+Both parts are Cortex-M7 with D-cache on by default, and `uart_stm32.c` does no
+cache maintenance of its own. Instead it checks: `uart_tx`, `uart_rx_enable`
+and `uart_rx_buf_rsp` each call `stm32_buf_in_nocache()` and return `-EFAULT`
+with *"buffer should be placed in a nocache memory region"* if the buffer is
+not there. This applies to the **transmit** buffer as well, so a packet built
+on the stack cannot be handed to `uart_tx` — it has to be staged.
+
+Upstream's own `samples/drivers/uart/async_api` sidesteps all of this by
+setting `CONFIG_DCACHE=n` on both `nucleo_f746zg` and `nucleo_h753zi`, which
+works because `stm32_buf_in_nocache()` is a static inline returning `true` when
+D-cache is off. That is the wrong trade here — `firmware/ctrl/README.md`
+measured what the D-cache buys on the H743 — so the link uses
+`CONFIG_NOCACHE_MEMORY=y` with `CONFIG_ARM_MPU=y` and puts only the ring in the
+MPU-backed `nocache` section. The rest of RAM stays cacheable.
+
+Where that section lands, from the linker maps:
+
+| board | `_nocache_ram_start` | what it is |
+| --- | --- | --- |
+| `nucleo_f767zi` | `0x20020000` | start of SRAM1 |
+| `mini_stm32h743` | `0x24000000` | start of AXI SRAM (`sram0`) |
+
+Both are reachable by the DMA controller, which is not automatic on the H743:
+DMA1 sits in the D2 domain and cannot see the D1 core-coupled memories at all.
+It reaches AXI SRAM through the D2-to-D1 bus matrix, but a buffer in `dtcm`
+would simply never be written. That is the exact opposite of the rule for the
+control pools in [`firmware/BRINGUP.md`](../BRINGUP.md), which want DTCM — the
+link buffers must not follow them there.
+
 ## Four boundary bugs, all found by instrumenting rather than guessing
 
 Every one of these looked like a rate or wiring problem. Each was a gap where
