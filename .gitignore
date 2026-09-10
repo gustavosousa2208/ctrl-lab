@@ -34,3 +34,6 @@ firmware/link/test/test-latch
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# git worktrees, which bd creates for feature work
+.worktrees/
