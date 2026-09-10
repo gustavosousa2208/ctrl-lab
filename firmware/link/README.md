@@ -1,4 +1,4 @@
-# Link probe — stage E2
+# Link probe — stages E2 and E3
 
 Moves bytes between the two boards and measures what they cost. No control loop,
 no plan execution: the only unknown this stage adds is the transport.
@@ -220,3 +220,30 @@ python3 firmware/scripts/rtt-read.py \
 Both ends must be built with the same `LINK_BAUD`. The initiator's console is
 `usart3` at the board default 115200 — deliberately not the link, so
 measurements print over a channel that is not the one being measured.
+
+`-DLINK_MODE=` picks which application is built, and both ends must agree:
+
+| | source | what it is |
+| --- | --- | --- |
+| `dma` (default) | `src/e3_link.c` | E3. DMA both ways, interrupts enabled, the 10 kHz tick running. Reports loss, round trip and accumulated clock skew. |
+| `polled` | `src/main.c` | E2. `uart_poll_in`/`out` with `irq_lock()` around the frame. Kept runnable because it is what E3's numbers are measured against, and the only build that still proves the wire with nothing between it and the peripheral. |
+
+The framing and the latch arithmetic need no board at all:
+
+```bash
+bash firmware/link/test/build.sh      # 42 checks, native
+```
+
+## E3 results
+
+**Not yet measured.** The application and both ends of the transport are
+written, built warning-free for both boards, and unit-tested where a host can
+reach — but no board has run this. The numbers below are the ones to fill in,
+and until they exist E3 has proven nothing on hardware:
+
+- 10 000 packets, zero bad CRC, zero seq gaps, zero resyncs after the handshake
+- round trip, with the 106.7 us of wire time at 6 Mbaud subtracted
+- the receive callback's worst-case cost, which the build already measures into
+  `rx_worst_cycles` — the estimate it is being checked against is ~170 cycles
+  for the table CRC plus the 32-byte gather
+- accumulated clock skew across the burst, and its sign
