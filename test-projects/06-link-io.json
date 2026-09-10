@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "kind": "ctrl-lab-project",
+  "generatedAt": "2026-09-10T00:00:00.000Z",
+  "title": "link-io",
+  "simulation": {
+    "endTime": 1.0,
+    "stepSize": 0.05
+  },
+  "nodes": [
+    {
+      "id": "input-1",
+      "type": "input",
+      "label": "Input",
+      "role": "input-01",
+      "position": { "x": 0, "y": 0 },
+      "properties": { "channel": "0", "default": "0.5", "dataType": "f32" }
+    },
+    {
+      "id": "gain-2",
+      "type": "gain",
+      "label": "Gain",
+      "role": "gain-01",
+      "position": { "x": 144, "y": 0 },
+      "properties": { "gain": "2.0", "dataType": "f32" }
+    },
+    {
+      "id": "integrator-3",
+      "type": "integrator",
+      "label": "Integrator",
+      "role": "integrator-01",
+      "position": { "x": 288, "y": 0 },
+      "properties": { "initialValue": "0.0", "dataType": "f32" }
+    },
+    {
+      "id": "output-4",
+      "type": "output",
+      "label": "Output",
+      "role": "output-01",
+      "position": { "x": 432, "y": 0 },
+      "properties": { "channel": "1", "dataType": "f32" }
+    }
+  ],
+  "edges": [
+    { "id": "e1", "sourceNodeId": "input-1", "sourcePortId": "out", "targetNodeId": "gain-2", "targetPortId": "in" },
+    { "id": "e2", "sourceNodeId": "gain-2", "sourcePortId": "out", "targetNodeId": "integrator-3", "targetPortId": "in" },
+    { "id": "e3", "sourceNodeId": "integrator-3", "sourcePortId": "out", "targetNodeId": "output-4", "targetPortId": "in" }
+  ],
+  "graphIndex": {
+    "nodesById": {
+      "input-1": { "type": "input", "role": "input-01", "inputPortIds": [], "outputPortIds": ["out"] },
+      "gain-2": { "type": "gain", "role": "gain-01", "inputPortIds": ["in"], "outputPortIds": ["out"] },
+      "integrator-3": { "type": "integrator", "role": "integrator-01", "inputPortIds": ["in"], "outputPortIds": ["out"] },
+      "output-4": { "type": "output", "role": "output-01", "inputPortIds": ["in"], "outputPortIds": [] }
+    },
+    "incomingEdgesByNodeId": {
+      "input-1": [], "gain-2": ["e1"], "integrator-3": ["e2"], "output-4": ["e3"]
+    },
+    "outgoingEdgesByNodeId": {
+      "input-1": ["e1"], "gain-2": ["e2"], "integrator-3": ["e3"], "output-4": []
+    }
+  }
+}

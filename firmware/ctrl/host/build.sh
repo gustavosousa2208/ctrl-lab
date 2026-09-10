@@ -26,6 +26,7 @@ $CC -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter \
     -ffp-contract=off -fno-fast-math \
     -I../src \
     -o ctrl-host \
-    main.c ../src/dcp.c ../src/kernels.c ../src/runtime.c ../src/trace.c
+    main.c ctrl_io_host.c \
+    ../src/dcp.c ../src/kernels.c ../src/runtime.c ../src/trace.c
 
 echo "built $(pwd)/ctrl-host"

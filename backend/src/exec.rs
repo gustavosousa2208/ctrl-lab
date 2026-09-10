@@ -110,6 +110,15 @@ impl PlanExecutor {
                         *slot = initial;
                     }
                 }
+                // Armed here and never written again: nothing on a PC drives
+                // it. On a board the runtime writes this word once per tick
+                // from the HAL, so the two agree exactly whenever no channel
+                // is bound - which is the whole of any PC run.
+                KernelId::Input => {
+                    if len == 1 {
+                        self.state[base] = params.first().copied().unwrap_or(0.0);
+                    }
+                }
                 _ => {}
             }
         }
@@ -246,7 +255,7 @@ impl PlanExecutor {
             // .internal/specs/2026-09-10-io-blocks-design.md, decision 4.
             // firmware/ctrl/host stubs identically, so a plan carrying these
             // still grades bit-for-bit.
-            KernelId::Input => *p.first().ok_or_else(short)?,
+            KernelId::Input => self.state[block.state_offset as usize],
 
             // Passes through, so a scope downstream can watch what was sent.
             KernelId::Output => self.input(block, 0, index)?,

@@ -63,6 +63,8 @@ target_sources(app PRIVATE
   src/kernels.c
   src/runtime.c
   src/trace.c
+  # No channels bound yet - see the file, and ctrl-lab-ri0.3 for the link one.
+  src/ctrl_io_none.c
 )
 
 # The single most important flag in this project.

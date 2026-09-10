@@ -26,6 +26,7 @@ frontend/vite.config.d.ts
 # the link framing tests (firmware/link/test/build.sh).
 # Zephyr build trees live outside the repo entirely - see firmware/scripts/.
 firmware/ctrl/host/ctrl-host
+firmware/ctrl/test/test-io-bindings
 firmware/link/test/test-frame
 firmware/link/test/test-latch
 

@@ -97,7 +97,7 @@ That is deliberate: it means a plan containing `Input`/`Output` still grades
 bit-for-bit on the host against the backend, and only *diverges by design* when
 a real HAL is bound underneath it on a board.
 
-### 6. The control core never sees a peripheral
+### 6. I/O happens at the tick boundary, not inside a kernel
 
 A new `ctrl_io.h`:
 
@@ -106,10 +106,44 @@ bool ctrl_io_read(uint16_t role, uint16_t index, float *out);
 bool ctrl_io_write(uint16_t role, uint16_t index, float value);
 ```
 
-`kernels.c` calls only these. The link implementation lives beside
-`firmware/link/`, the host implementation beside the harness. This is the
-boundary the bead calls out: *"the control core knows nothing about peripherals
-— only the HAL does."*
+**`runtime.c` calls these, not `kernels.c`.** The first draft of this document
+had the kernels do it, which was wrong on three counts:
+
+- `kernels.h` opens by declaring every kernel *"pure, deterministic,
+  allocation-free and bounded-WCET"*. A kernel that reads a peripheral is none
+  of the first and arguably not the last.
+- The step is deliberately two passes over all blocks, and a kernel reading the
+  HAL mid-pass means two `Input` blocks on the same channel can see **different
+  values within one tick**. For a stage whose whole output is a latency and a
+  skew figure, a sample time that is "somewhere inside the tick" is not good
+  enough.
+- It would put the peripheral inside the part of the system that is graded
+  bit-for-bit against `exec.rs`.
+
+So the sequence per tick becomes:
+
+```
+  read every Input binding   <- one instant, before anything runs
+  pass 1: outputs
+  write every Output binding <- as soon as the signal exists
+  pass 2: state updates
+```
+
+Writes go between the passes on purpose: pass 2 changes no signals, so the
+value is already final, and going out before it saves a pass of latency on a
+link that has none to spare.
+
+`Input` therefore carries **one state word**, armed to its `default` exactly as
+an integrator arms to `initialValue`, and its kernel is `return ctx->state[0]`
+— the same shape as `integrator_output`, and still pure. The runtime writes
+that word before pass 1. A read that fails leaves it untouched, which is a
+zero-order hold on the last good value; on the host, where every read fails,
+it holds `default` forever and therefore agrees with `exec.rs` by construction
+rather than by coincidence.
+
+The link implementation lives beside `firmware/link/`, the host one beside the
+harness. This is the boundary the bead calls out: *"the control core knows
+nothing about peripherals — only the HAL does."*
 
 ### 7. What the loader must check
 

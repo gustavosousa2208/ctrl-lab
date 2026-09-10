@@ -49,8 +49,16 @@ const char *ctrl_load_result_str(enum ctrl_load_result result)
 		return "block input count disagrees with its kernel";
 	case CTRL_LOAD_PARAMS_TOO_SHORT:
 		return "packed parameters too short for the kernel";
-	case CTRL_LOAD_IO_BINDINGS_UNSUPPORTED:
-		return "plan carries io_bindings, which this runtime cannot bind";
+	case CTRL_LOAD_IO_BLOCK_OUT_OF_RANGE:
+		return "io_binding names a block that does not exist";
+	case CTRL_LOAD_IO_BLOCK_NOT_IO:
+		return "io_binding names a block that is not an Input or Output";
+	case CTRL_LOAD_IO_ROLE_UNSUPPORTED:
+		return "io_binding names a channel role this build does not implement";
+	case CTRL_LOAD_IO_DUPLICATE_BINDING:
+		return "two io_bindings name the same block";
+	case CTRL_LOAD_IO_BLOCK_UNBOUND:
+		return "an Input or Output block has no io_binding";
 	case CTRL_LOAD_UNSUPPORTED_RATE_DIV:
 		return "rate_div != 1, and the scheduler runs one rate";
 	case CTRL_LOAD_WCET_EXCEEDS_PERIOD:
@@ -247,16 +255,26 @@ static enum ctrl_load_result decode(struct ctrl_plan *plan, const uint8_t *bytes
 		plan->params[i] = take_f32(&c);
 	}
 
-	/* v1 emits no io_bindings and this runtime has no HAL channels to bind
-	 * them to, so a non-empty section is refused rather than ignored.
-	 */
-	if (take_u32(&c) != 0) {
-		return CTRL_LOAD_IO_BINDINGS_UNSUPPORTED;
+	plan->n_io_bindings = take_u32(&c);
+	if (plan->n_io_bindings > CTRL_MAX_IO_BINDINGS) {
+		return CTRL_LOAD_TOO_LARGE;
+	}
+	for (uint32_t i = 0; i < plan->n_io_bindings; i++) {
+		struct ctrl_io_binding *binding = &plan->io_bindings[i];
+
+		binding->block_index = take_u32(&c);
+		binding->channel_role = take_u16(&c);
+		binding->channel_index = take_u16(&c);
 	}
 
+	/* Nothing above may be trusted until the stream is known to have held
+	 * it - an overrun returns zeros, and zeros are a valid-looking binding.
+	 */
 	if (c.overrun) {
 		return CTRL_LOAD_TOO_SHORT;
 	}
+
+
 
 	/* Meta (model name, generated_at, backend version) follows. It is
 	 * non-executable provenance; the runtime does not retain it.
@@ -265,6 +283,68 @@ static enum ctrl_load_result decode(struct ctrl_plan *plan, const uint8_t *bytes
 }
 
 /* --- validate ------------------------------------------------------------ */
+
+/* Every Input and Output block has exactly one binding, and every binding names
+ * a real block of the right kind on a role this build implements.
+ *
+ * Checked once, here, so ctrl_step() can walk the bindings with no bounds test
+ * at all - the same bargain the rest of this file makes.
+ *
+ * The unbound case is not pedantry. An Input with no binding would read
+ * whatever its default happens to be, produce a plausible number every tick,
+ * and look exactly like a working link that is reading zero.
+ */
+static enum ctrl_load_result validate_io_bindings(const struct ctrl_plan *plan)
+{
+	/* One bit per block. CTRL_MAX_BLOCKS is 32, and a build assertion keeps
+	 * it that way rather than letting a raised limit silently drop bindings
+	 * off the top of the mask.
+	 */
+	_Static_assert(CTRL_MAX_BLOCKS <= 32, "bound mask holds one bit per block");
+	uint32_t bound = 0;
+
+	for (uint32_t i = 0; i < plan->n_io_bindings; i++) {
+		const struct ctrl_io_binding *binding = &plan->io_bindings[i];
+
+		if (binding->block_index >= plan->n_blocks) {
+			return CTRL_LOAD_IO_BLOCK_OUT_OF_RANGE;
+		}
+
+		const uint16_t kernel = plan->blocks[binding->block_index].kernel_id;
+
+		if (kernel != CTRL_KERNEL_INPUT && kernel != CTRL_KERNEL_OUTPUT) {
+			return CTRL_LOAD_IO_BLOCK_NOT_IO;
+		}
+
+		/* Only LINK exists. ADC and DAC are numbered but unimplemented,
+		 * and this is where the direction check joins - an Input on a
+		 * DAC - once they do.
+		 */
+		if (binding->channel_role != CTRL_CHANNEL_LINK) {
+			return CTRL_LOAD_IO_ROLE_UNSUPPORTED;
+		}
+
+		const uint32_t bit = 1U << binding->block_index;
+
+		if ((bound & bit) != 0U) {
+			return CTRL_LOAD_IO_DUPLICATE_BINDING;
+		}
+		bound |= bit;
+	}
+
+	for (uint32_t i = 0; i < plan->n_blocks; i++) {
+		const uint16_t kernel = plan->blocks[i].kernel_id;
+
+		if (kernel != CTRL_KERNEL_INPUT && kernel != CTRL_KERNEL_OUTPUT) {
+			continue;
+		}
+		if ((bound & (1U << i)) == 0U) {
+			return CTRL_LOAD_IO_BLOCK_UNBOUND;
+		}
+	}
+
+	return CTRL_LOAD_OK;
+}
 
 static enum ctrl_load_result validate(const struct ctrl_plan *plan)
 {
@@ -336,6 +416,17 @@ static enum ctrl_load_result validate(const struct ctrl_plan *plan)
 			}
 			break;
 
+		case CTRL_KERNEL_INPUT:
+			/* One word, which the runtime writes from the HAL before
+			 * pass 1 and the kernel then just returns. Armed to
+			 * params[0], the same way an integrator arms to its
+			 * initialValue - see runtime.h.
+			 */
+			if (block->state_len != 1) {
+				return CTRL_LOAD_MALFORMED;
+			}
+			break;
+
 		case CTRL_KERNEL_TRANSFER_FUNCTION: {
 			const int order = (int)params[0];
 
@@ -364,7 +455,7 @@ static enum ctrl_load_result validate(const struct ctrl_plan *plan)
 		}
 	}
 
-	return CTRL_LOAD_OK;
+	return validate_io_bindings(plan);
 }
 
 enum ctrl_load_result ctrl_plan_load(struct ctrl_plan *plan, const uint8_t *bytes, uint32_t len)

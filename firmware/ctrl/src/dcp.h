@@ -26,7 +26,11 @@
  * ids are append-only (see plan.rs, "wire-stable: never renumber, only append").
  */
 #define CTRL_DCP_FORMAT_VERSION     1
-#define CTRL_DCP_KERNEL_SET_VERSION 1
+/* v2 added Input and Output. A plan is stamped with the highest version its own
+ * blocks demand, not with the backend's library version, so a plan of gains and
+ * sums still says 1 and still loads on firmware that predates these.
+ */
+#define CTRL_DCP_KERNEL_SET_VERSION 2
 
 /* Static capacity. Pools are sized once from these, never allocated, and a plan
  * that exceeds any of them is rejected at load. Sized with headroom over the
@@ -39,6 +43,8 @@
 #define CTRL_MAX_PARAMS  256
 /* The widest kernel is Switch, which gathers a, b and sel. */
 #define CTRL_MAX_INPUTS  3
+/* One per Input or Output block, so it cannot exceed the block count. */
+#define CTRL_MAX_IO_BINDINGS CTRL_MAX_BLOCKS
 
 /* Wire-stable kernel ids. Mirrors plan.rs KernelId; never renumber. */
 enum ctrl_kernel_id {
@@ -52,7 +58,32 @@ enum ctrl_kernel_id {
 	CTRL_KERNEL_INTEGRATOR        = 8,
 	CTRL_KERNEL_TRANSFER_FUNCTION = 9,
 	CTRL_KERNEL_SCOPE             = 10,
+	CTRL_KERNEL_INPUT             = 11,
+	CTRL_KERNEL_OUTPUT            = 12,
 	CTRL_KERNEL__COUNT
+};
+
+/* Which peripheral class a binding names. Mirrors plan.rs channel_role; never
+ * renumber, only append. Only LINK is implemented - a plan naming a reserved
+ * role is refused by name rather than bound to nothing.
+ */
+enum ctrl_channel_role {
+	CTRL_CHANNEL_LINK = 1,
+	CTRL_CHANNEL_ADC  = 2,	/* reserved, stage F */
+	CTRL_CHANNEL_DAC  = 3,	/* reserved, stage F */
+	CTRL_CHANNEL_GPIO = 4,	/* reserved */
+};
+
+/* Ties one Input or Output block to a hardware channel.
+ *
+ * The runtime resolves these at the tick boundary - reads before pass 1, writes
+ * between the passes - so the kernels stay pure and every block reading a
+ * channel within one tick sees the same sample. See runtime.h.
+ */
+struct ctrl_io_binding {
+	uint32_t block_index;
+	uint16_t channel_role;
+	uint16_t channel_index;
 };
 
 /* One scheduled block, already in the backend's topological order. */
@@ -70,10 +101,10 @@ struct ctrl_block {
 
 /* A loaded plan. Fixed-size throughout: this struct IS the allocation.
  *
- * io_bindings are deliberately absent. The format carries the section and the
- * backend always emits it empty (see PROJECT_STATUS.md, "Open decisions"); the
- * decoder therefore skips it and rejects a non-empty one rather than pretending
- * to bind channels it has no HAL for. Stage E is where that changes.
+ * io_bindings arrive with stage E. Every Input and Output block has exactly one,
+ * checked at load, so ctrl_step() can walk them without re-validating: the
+ * block index is in range, the kernel at it is the right one for the direction,
+ * and the role is one this build implements.
  */
 struct ctrl_plan {
 	uint16_t format_version;
@@ -85,8 +116,10 @@ struct ctrl_plan {
 	uint32_t signal_count;
 	uint32_t state_len;
 	uint32_t param_count;
+	uint32_t n_io_bindings;
 	struct ctrl_block blocks[CTRL_MAX_BLOCKS];
 	float params[CTRL_MAX_PARAMS];
+	struct ctrl_io_binding io_bindings[CTRL_MAX_IO_BINDINGS];
 };
 
 enum ctrl_load_result {
@@ -103,7 +136,14 @@ enum ctrl_load_result {
 	CTRL_LOAD_SLOT_OUT_OF_RANGE,
 	CTRL_LOAD_ARITY_MISMATCH,
 	CTRL_LOAD_PARAMS_TOO_SHORT,
-	CTRL_LOAD_IO_BINDINGS_UNSUPPORTED,
+	/* One per way a binding can be wrong, because "bad io_bindings" sends
+	 * you reading the encoder instead of the one line that is off.
+	 */
+	CTRL_LOAD_IO_BLOCK_OUT_OF_RANGE,
+	CTRL_LOAD_IO_BLOCK_NOT_IO,
+	CTRL_LOAD_IO_ROLE_UNSUPPORTED,
+	CTRL_LOAD_IO_DUPLICATE_BINDING,
+	CTRL_LOAD_IO_BLOCK_UNBOUND,
 	CTRL_LOAD_UNSUPPORTED_RATE_DIV,
 	CTRL_LOAD_WCET_EXCEEDS_PERIOD,
 };

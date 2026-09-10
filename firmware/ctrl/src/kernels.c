@@ -172,6 +172,26 @@ static float scope_output(const struct ctrl_kernel_ctx *ctx)
 	return ctx->inputs[0];
 }
 
+/* The channel's value for this tick, which runtime.c wrote into the state word
+ * before pass 1 started. Deliberately shaped like integrator_output: the kernel
+ * stays pure and never learns that a peripheral exists.
+ *
+ * If no fresh sample arrived, that word still holds the last one - or the
+ * `default` from params[0] that ctrl_arm put there. See ctrl_io.h.
+ */
+static float input_output(const struct ctrl_kernel_ctx *ctx)
+{
+	return ctx->state[0];
+}
+
+/* Passes through, so a scope downstream can watch what was sent. runtime.c does
+ * the sending, between the passes, once this signal exists.
+ */
+static float output_output(const struct ctrl_kernel_ctx *ctx)
+{
+	return ctx->inputs[0];
+}
+
 /* --- stateful ------------------------------------------------------------ */
 
 /* A zero-step delay carries no state and passes straight through; otherwise the
@@ -261,6 +281,8 @@ static const struct ctrl_kernel_desc descriptors[CTRL_KERNEL__COUNT] = {
 	[CTRL_KERNEL_TRANSFER_FUNCTION] =
 				    { "transferFunction", transfer_function_output, transfer_function_update, 1, 1 },
 	[CTRL_KERNEL_SCOPE]       = { "scope",       scope_output,             NULL,                     1, 0 },
+	[CTRL_KERNEL_INPUT]       = { "input",       input_output,             NULL,                     0, 1 },
+	[CTRL_KERNEL_OUTPUT]      = { "output",      output_output,            NULL,                     1, 0 },
 };
 
 const struct ctrl_kernel_desc *ctrl_kernel_desc(uint16_t kernel_id)

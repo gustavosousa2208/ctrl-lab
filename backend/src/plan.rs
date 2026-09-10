@@ -385,7 +385,11 @@ fn pack_params(
         // `default` is what this block reads when nothing is bound underneath
         // it - every PC simulation, and the host harness. See
         // .internal/specs/2026-09-10-io-blocks-design.md, decision 4.
-        KernelId::Input => (vec![numeric("default", 0.0)?], 0),
+        // One state word, armed to `default`, exactly as the integrator arms
+        // to `initialValue`. The firmware runtime writes the channel's value
+        // into it once per tick, before pass 1, so every block reading that
+        // channel in a tick sees the same sample. See decision 6 of the spec.
+        KernelId::Input => (vec![numeric("default", 0.0)?], 1),
         KernelId::Output => (Vec::new(), 0),
     })
 }
@@ -926,6 +930,10 @@ mod tests {
             .expect("input block");
         assert_eq!(input.param_len, 1);
         assert_eq!(plan.params[input.param_offset as usize], 0.25);
+        assert_eq!(
+            input.state_len, 1,
+            "the runtime writes the channel value into this word once per tick"
+        );
 
         let output = plan
             .blocks

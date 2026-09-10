@@ -1,5 +1,6 @@
 #include <string.h>
 
+#include "ctrl_io.h"
 #include "runtime.h"
 
 /* The same sources build twice: once for the board, and once natively by
@@ -64,6 +65,15 @@ void ctrl_arm(struct ctrl_runtime *rt, const struct ctrl_plan *plan)
 			state[0] = params[0];
 			break;
 
+		case CTRL_KERNEL_INPUT:
+			/* The channel's `default`, held until a read succeeds.
+			 * On the host no read ever does, which is what makes a
+			 * plan carrying these blocks grade bit-for-bit against
+			 * exec.rs. See ctrl_io.h.
+			 */
+			state[0] = params[0];
+			break;
+
 		case CTRL_KERNEL_DELAY:
 			for (uint16_t k = 0; k < block->state_len; k++) {
 				state[k] = params[0];
@@ -74,6 +84,45 @@ void ctrl_arm(struct ctrl_runtime *rt, const struct ctrl_plan *plan)
 			/* Everything else arms to zero, which memset already did. */
 			break;
 		}
+	}
+}
+
+/* The two halves of the tick boundary.
+ *
+ * Every binding was proved at load time to name a real block of the right kind
+ * on a role this build implements, so neither of these checks anything - the
+ * same bargain the rest of the runtime makes with the loader.
+ */
+static void io_read_inputs(const struct ctrl_plan *plan)
+{
+	for (uint32_t i = 0; i < plan->n_io_bindings; i++) {
+		const struct ctrl_io_binding *binding = &plan->io_bindings[i];
+		const struct ctrl_block *block = &plan->blocks[binding->block_index];
+
+		if (block->kernel_id != CTRL_KERNEL_INPUT) {
+			continue;
+		}
+
+		/* Straight into the state word the kernel will return. A false
+		 * return writes nothing, so the previous sample stands.
+		 */
+		(void)ctrl_io_read(binding->channel_role, binding->channel_index,
+				   &state_pool[block->state_offset]);
+	}
+}
+
+static void io_write_outputs(const struct ctrl_plan *plan)
+{
+	for (uint32_t i = 0; i < plan->n_io_bindings; i++) {
+		const struct ctrl_io_binding *binding = &plan->io_bindings[i];
+		const struct ctrl_block *block = &plan->blocks[binding->block_index];
+
+		if (block->kernel_id != CTRL_KERNEL_OUTPUT) {
+			continue;
+		}
+
+		(void)ctrl_io_write(binding->channel_role, binding->channel_index,
+				    signal_pool[block->output_signal]);
 	}
 }
 
@@ -95,6 +144,17 @@ bool ctrl_step(struct ctrl_runtime *rt)
 	float inputs[CTRL_MAX_INPUTS];
 
 	ctrl_kernel_fault_clear();
+
+	/* Every inbound channel, once, before anything runs.
+	 *
+	 * The instant matters as much as the value. Two Input blocks on one
+	 * channel must see the same sample, and a stage whose deliverables are
+	 * a latency and a clock skew cannot have its sample time be "somewhere
+	 * inside the tick". A read that returns false leaves the state word
+	 * holding its last good value, which is a zero-order hold - see
+	 * ctrl_io.h.
+	 */
+	io_read_inputs(plan);
 
 	/* Pass 1: every block's output. */
 	for (uint32_t i = 0; i < plan->n_blocks; i++) {
@@ -127,6 +187,14 @@ bool ctrl_step(struct ctrl_runtime *rt)
 
 		signal_pool[block->output_signal] = value;
 	}
+
+	/* Every outbound channel, as soon as its value is final.
+	 *
+	 * Between the passes rather than after them: pass 2 changes no signals,
+	 * so the value is already what it will be, and going out now saves a
+	 * pass of latency on a link that has none to spare.
+	 */
+	io_write_outputs(plan);
 
 	/* Pass 2: every block's state update, reading the signals pass 1 just
 	 * produced. This is where a strictly-proper block finally sees u[k].
