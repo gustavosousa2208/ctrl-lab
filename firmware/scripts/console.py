@@ -39,7 +39,7 @@ def main():
     # Matches firmware/ctrl's CTRL_CONSOLE_BAUD default. The bringup probe still
     # runs at the board default, so read it with --baud 115200.
     parser.add_argument("--baud", type=int, default=921600)
-    parser.add_argument("--until", default="done", help="stop once this line appears")
+    parser.add_argument("--until", default="done", help="stop once this LINE appears")
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--no-reset", action="store_true")
     args = parser.parse_args()
@@ -110,7 +110,13 @@ def main():
     deadline = time.time() + args.timeout
     chunks = []
     seen = 0
-    needle = args.until.encode()
+    # Anchored to the start of a line, which the flag's name has always claimed
+    # and the code did not do. `--until done` used to match the "done" inside
+    # e3_link.c's "tx_done=100", so the capture stopped two lines early and mid
+    # number - a truncated stat line that looks exactly like a board that hung.
+    # Matching "\ndone" instead costs nothing: every sentinel the firmware here
+    # prints is already on a line of its own.
+    needle = b"\n" + args.until.encode()
     while time.time() < deadline:
         ready, _, _ = select.select([fd], [], [], 0.2)
         if not ready:
@@ -143,7 +149,7 @@ def main():
             handle.write(raw)
         print(f"\n[captured {len(raw)} bytes to {args.out}]", file=sys.stderr)
 
-    if args.until not in text:
+    if needle.decode() not in text:
         print(f"\n[warning: never saw `{args.until}` - timed out]", file=sys.stderr)
         return 1
     return 0
