@@ -234,6 +234,50 @@ STM32H743 (Cortex-M7 at 240 MHz).
 The step figures are not comparable head to head — six blocks against three —
 but the H743's per-block speed advantage from the bring-up probe carries over.
 
+## Streaming the trace while the run is happening
+
+`-DCTRL_STREAM=y` emits each trace row over the console as it is produced,
+instead of only dumping the whole run at the end. Same rows, same format as
+`CTRL_TRACE_TEXT` — `T,<hex>,<hex>,…`, one per line — so `grade-trace.py`
+already parses them. What changes is *when* they leave.
+
+**It costs nothing measurable.** Fixture 04, 501 steps, streaming on:
+
+| | streaming | documented non-streaming |
+| --- | --- | --- |
+| step_ns | min 19 143, mean 19 143, max 19 226 | ~18.5 us |
+| tick jitter | 17 cycles, **78 ns** | 17 cycles, **78 ns** |
+| deadlines missed | 0 of 501 | 0 |
+| graded digest | `0xfddb22c1a9525b2c` PASS | `0xfddb22c1a9525b2c` |
+
+That is not luck, it is structural. The emit runs in `main()`, which blocks on a
+semaphore for the whole run and is **preemptible**, while the control step runs
+in a `K_PRIO_COOP(0)` thread. Main cannot preempt the step, so however long
+these writes take — a row is ~60 bytes, about 650 us at 921600 — they cannot
+land inside one. Emitting from the control thread would put that write inside a
+44 us step; the build refuses `CTRL_STREAM` together with `CTRL_FREE_RUN` for
+the same reason, since free-running has no separate thread to hide behind.
+
+### The console damages about one row per run, and a reader must expect it
+
+Streamed captures come back with **500 clean rows and one damaged, or 501 clean
+and none**, varying run to run. The damage is always the same shape: a row
+missing its start, picked up mid-token —
+
+```
+a6bc,3f800000,3f800000,3f1caca2,3d437f75
+```
+
+This is the ST-Link VCP characteristic `console.py` already records, *"one to
+three mangled rows, in different places every run"*. The firmware emits all 501
+every time — the same run's binary frame arrives intact and grades PASS, and a
+second capture of the same build came back 501/501 clean.
+
+So a live reader must parse line by line, **discard malformed lines and count
+them**, and show that count. Silently interpolating across a gap would put a
+fabricated sample on a plot whose whole purpose is to show what the board
+actually did.
+
 ## Stage E3: a controller and a plant, on two boards, graded
 
 Measured 2026-09-10. **F767 runs the controller, H743 runs the plant**, signals

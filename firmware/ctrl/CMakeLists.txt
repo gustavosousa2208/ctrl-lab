@@ -176,6 +176,26 @@ if(CTRL_FREE_RUN)
   message(STATUS "ctrl: free-running, no timer")
 endif()
 
+# Stream the trace over the console as it is produced, instead of only dumping
+# it at the end:
+#   west build ... -- -DCTRL_STREAM=y [-DCTRL_STREAM_POLL_MS=5]
+#
+# The rows are the same ones the record-then-dump path emits afterwards - same
+# format, same values - so the graded digest and the DCPT frame are unchanged.
+# What changes is when they leave, which is what makes a live monitor possible.
+#
+# The emit happens in main(), never in the control thread. main is preemptible
+# and the control thread is K_PRIO_COOP(0), so a console write here structurally
+# cannot land inside a step. See .internal/specs/2026-09-10-live-monitor-design.md.
+if(CTRL_STREAM)
+  if(NOT CTRL_STREAM_POLL_MS)
+    set(CTRL_STREAM_POLL_MS 5)
+  endif()
+  target_compile_definitions(app PRIVATE
+    CTRL_STREAM=1 CTRL_STREAM_POLL_MS=${CTRL_STREAM_POLL_MS})
+  message(STATUS "ctrl: streaming trace rows, draining every ${CTRL_STREAM_POLL_MS} ms")
+endif()
+
 if(CTRL_IRQ_LOCK)
   target_compile_definitions(app PRIVATE CTRL_IRQ_LOCK=1)
   message(STATUS "ctrl: control step runs with interrupts locked")

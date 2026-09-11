@@ -157,6 +157,11 @@ static bool run_one_step(uint32_t k)
 	return true;
 }
 
+#if defined(CTRL_STREAM) && defined(CTRL_FREE_RUN)
+#error "CTRL_STREAM needs the timer-driven runner: free-running has no separate \
+control thread, so the emit would share a context with the step"
+#endif
+
 #ifdef CTRL_FREE_RUN
 
 /* Steps back to back, as fast as the core manages. Not a control loop - this is
@@ -206,7 +211,11 @@ static K_SEM_DEFINE(run_complete, 0, 1);
  */
 static atomic_t ticks_raised;
 static uint32_t ticks_missed;
-static uint32_t completed_steps;
+/* Written by the control thread, read by main()'s streaming drain loop. Without
+ * volatile the load can be hoisted out of that loop and the stream stalls at
+ * whatever value it happened to see first.
+ */
+static volatile uint32_t completed_steps;
 static uint32_t tick_deltas[CTRL_PLAN_STEPS];
 static uint32_t awake_deltas[CTRL_PLAN_STEPS];
 
@@ -274,6 +283,31 @@ static void control_thread(void *a, void *b, void *c)
 	k_sem_give(&run_complete);
 }
 
+#ifdef CTRL_STREAM
+/* Emits the rows the control thread has appended since `from`, and returns the
+ * new watermark.
+ *
+ * Called only from main(), which is preemptible while the control thread is
+ * K_PRIO_COOP(0). That ordering is the whole safety argument: main cannot
+ * preempt the step, so however long these printk calls take - and a row is
+ * ~60 bytes, about 650 us at 921600 - they cannot land inside one. Emitting
+ * from the control thread instead would put that write inside a 44 us step.
+ */
+static uint32_t stream_rows(uint32_t from)
+{
+	const uint32_t upto = completed_steps;
+
+	for (uint32_t k = from; k < upto; k++) {
+		printk("T,%08x", ctrl_f32_bits(trace_times[k]));
+		for (uint32_t slot = 0; slot < plan.signal_count; slot++) {
+			printk(",%08x", ctrl_f32_bits(trace_signals[k][slot]));
+		}
+		printk("\n");
+	}
+	return upto;
+}
+#endif /* CTRL_STREAM */
+
 static uint32_t run_plan(void)
 {
 	k_timer_init(&tick_timer, tick_isr, NULL);
@@ -300,7 +334,25 @@ static uint32_t run_plan(void)
 #endif
 
 	k_timer_start(&tick_timer, K_NSEC(tick_ns), K_NSEC(tick_ns));
+
+#ifdef CTRL_STREAM
+	/* Drain as it fills instead of waiting for the end. The rows are the same
+	 * ones the record-then-dump path emits afterwards; what changes is only
+	 * when they leave, so the graded digest and the DCPT frame are untouched.
+	 */
+	printk("\nstream_begin signals=%u\n", plan.signal_count);
+
+	uint32_t streamed = 0;
+
+	while (k_sem_take(&run_complete, K_MSEC(CTRL_STREAM_POLL_MS)) != 0) {
+		streamed = stream_rows(streamed);
+	}
+	streamed = stream_rows(streamed);	/* whatever landed in the last window */
+
+	printk("stream_end steps=%u\n", streamed);
+#else
 	k_sem_take(&run_complete, K_FOREVER);
+#endif
 
 	return completed_steps;
 }
