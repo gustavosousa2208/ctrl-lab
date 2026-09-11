@@ -484,6 +484,7 @@ name = "ctrl-lab"
 version = "0.1.0"
 dependencies = [
  "ctrl-backend",
+ "libc",
  "serde",
  "tauri",
  "tauri-build",

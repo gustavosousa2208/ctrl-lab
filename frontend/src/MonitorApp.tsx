@@ -146,6 +146,10 @@ export default function MonitorApp() {
     setRevision((value) => value + 1);
     try {
       await invoke("monitor_start", { port });
+      // Reflect it immediately rather than waiting for the reader's first
+      // status event. The command returning Ok means the port is open, and a
+      // UI that still says `idle` invites a second press.
+      setStatus((current) => ({ ...current, running: true, error: null }));
     } catch (error) {
       setStartError(String(error));
     }
@@ -153,6 +157,7 @@ export default function MonitorApp() {
 
   const stop = useCallback(async () => {
     await invoke("monitor_stop");
+    setStatus((current) => ({ ...current, running: false }));
   }, []);
 
   const samples = samplesRef.current;

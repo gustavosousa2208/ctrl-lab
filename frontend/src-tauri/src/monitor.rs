@@ -8,12 +8,13 @@
 //! line discipline, and the same is true from Rust - so the dependency here is
 //! `stty`, which is already a dependency of the tooling beside it.
 
-use std::fs::File;
-use std::io::Read;
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Read};
+use std::os::unix::fs::OpenOptionsExt;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -24,6 +25,11 @@ use tauri::{AppHandle, Emitter};
 /// 460800, 921600 - and rejects anything above, so 921600 is the ceiling for
 /// the ST-Link VCP path rather than a tuning choice.
 pub const DEFAULT_BAUD: u32 = 921_600;
+
+/// How often the reader repeats its status while nothing is arriving. Often
+/// enough that the UI feels attached to the board, rarely enough that it is not
+/// a second event stream competing with the rows.
+const STATUS_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Default)]
 pub struct MonitorState {
@@ -58,6 +64,13 @@ struct MonitorStatus {
 /// Ports that could be a board. The caller picks; guessing the wrong one
 /// produces silence rather than an error, which is hard to tell from a board
 /// that is simply not running.
+///
+/// Worth rescanning more often than feels necessary: resetting a board over
+/// SWD makes its VCP re-enumerate, and the device node does not come back
+/// under the same name - `/dev/cu.usbmodem11403` was `/dev/cu.usbmodem1103`
+/// after one reset here. So the order is reset the board, THEN rescan, THEN
+/// start; starting first leaves the reader holding a descriptor to a device
+/// that no longer exists.
 #[tauri::command]
 pub fn monitor_ports() -> Vec<String> {
   let mut ports: Vec<String> = std::fs::read_dir("/dev")
@@ -81,15 +94,16 @@ pub fn monitor_ports() -> Vec<String> {
 /// drops bytes mid-line. `-ixon -ixoff` for the same class of reason, so no
 /// data byte is ever read as a flow-control character.
 ///
-/// `min 0 time 1` comes last on purpose. `raw` sets min=1 time=0, which makes
-/// a read block until at least one byte arrives - and a blocked read cannot
-/// notice that the user pressed stop. With these, a read returns after 100 ms
-/// with whatever is there, including nothing.
+/// Applied while the port is already open, and deliberately so. `stty` opens
+/// the device to set it and closes it again; on a port nobody else is holding,
+/// the settings can revert with that close, and the ones that revert are the
+/// flow-control ones above. Holding the descriptor across the call is what
+/// makes them stick.
 fn configure_port(port: &str, baud: u32) -> Result<(), String> {
   let output = Command::new("stty")
     .args([
       "-f", port, &baud.to_string(), "cs8", "-cstopb", "-parenb", "raw", "-echo",
-      "clocal", "-crtscts", "-ixon", "-ixoff", "min", "0", "time", "1",
+      "clocal", "-crtscts", "-ixon", "-ixoff",
     ])
     .output()
     .map_err(|error| format!("could not run stty: {error}"))?;
@@ -139,18 +153,30 @@ pub fn monitor_start(
   }
 
   let baud = baud.unwrap_or(DEFAULT_BAUD);
-  if let Err(error) = configure_port(&port, baud) {
-    state.running.store(false, Ordering::SeqCst);
-    return Err(error);
-  }
 
-  let mut file = match File::open(&port) {
+  // Opened non-blocking, which is the whole reason this is not just File::open.
+  // A blocking read cannot distinguish "nothing to say yet" from "the device
+  // went away" - both surface as a read returning zero - so a monitor built on
+  // one reports `reading` for ever after a port disconnects. With O_NONBLOCK
+  // the first case is WouldBlock and the second is a genuine zero, and they can
+  // be told apart. This is also what console.py does, for the same reason.
+  let mut file = match OpenOptions::new()
+    .read(true)
+    .custom_flags(libc::O_NONBLOCK)
+    .open(&port)
+  {
     Ok(file) => file,
     Err(error) => {
       state.running.store(false, Ordering::SeqCst);
       return Err(format!("could not open {port}: {error}"));
     }
   };
+
+  // After the open, so stty's own close cannot revert it. See configure_port.
+  if let Err(error) = configure_port(&port, baud) {
+    state.running.store(false, Ordering::SeqCst);
+    return Err(error);
+  }
 
   let running = Arc::clone(&state.running);
 
@@ -161,15 +187,39 @@ pub fn monitor_start(
     let mut damaged: u64 = 0;
     let mut error = None;
 
+    // Say so before waiting for a byte. A board between runs is silent, and
+    // the first version only emitted status after a read returned data - so
+    // starting the monitor on a quiet board left the UI showing `idle` with
+    // its stop button disabled, and the only feedback for pressing start was
+    // an "already running" error on the second press.
+    let _ = app.emit(
+      "monitor://status",
+      MonitorStatus { running: true, rows: 0, damaged: 0, error: None },
+    );
+    let mut last_status = Instant::now();
+
     while running.load(Ordering::SeqCst) {
       let read = match file.read(&mut buffer) {
+        // A real end of stream. The board did not go quiet, the device went
+        // away - a reset that re-enumerated the VCP, or the cable. Saying so
+        // is the entire point of opening non-blocking.
         Ok(0) => {
-          // `min 0 time 1` expired with nothing to say. Not an end of stream:
-          // a board between runs is simply quiet.
+          error = Some("the port closed - the board may have re-enumerated".to_string());
+          break;
+        }
+        Ok(n) => n,
+        // Nothing to read yet, which is what a board between runs looks like.
+        Err(io) if io.kind() == ErrorKind::WouldBlock => {
+          if last_status.elapsed() >= STATUS_INTERVAL {
+            last_status = Instant::now();
+            let _ = app.emit(
+              "monitor://status",
+              MonitorStatus { running: true, rows, damaged, error: None },
+            );
+          }
           std::thread::sleep(Duration::from_millis(20));
           continue;
         }
-        Ok(n) => n,
         Err(io) => {
           error = Some(format!("read failed: {io}"));
           break;
@@ -199,10 +249,13 @@ pub fn monitor_start(
         }
       }
 
-      let _ = app.emit(
-        "monitor://status",
-        MonitorStatus { running: true, rows, damaged, error: None },
-      );
+      if last_status.elapsed() >= STATUS_INTERVAL {
+        last_status = Instant::now();
+        let _ = app.emit(
+          "monitor://status",
+          MonitorStatus { running: true, rows, damaged, error: None },
+        );
+      }
     }
 
     running.store(false, Ordering::SeqCst);
@@ -273,6 +326,8 @@ mod tests {
   ///     cargo test --manifest-path frontend/src-tauri/Cargo.toml \
   ///     -- --ignored --nocapture
   ///
+  /// Reads for 6 seconds unless CTRL_MONITOR_SECONDS says otherwise.
+  ///
   /// Ignored by default: it needs a board that is streaming.
   #[test]
   #[ignore]
@@ -289,7 +344,13 @@ mod tests {
     let mut pending = String::new();
     let mut buffer = [0u8; 4096];
     let (mut rows, mut damaged) = (0u64, 0u64);
-    let deadline = Instant::now() + Duration::from_secs(20);
+    // Short by default so a run cannot be mistaken for a hang; override with
+    // CTRL_MONITOR_SECONDS when watching a longer stretch.
+    let seconds: u64 = std::env::var("CTRL_MONITOR_SECONDS")
+      .ok()
+      .and_then(|value| value.parse().ok())
+      .unwrap_or(6);
+    let deadline = Instant::now() + Duration::from_secs(seconds);
 
     while Instant::now() < deadline {
       let read = match file.read(&mut buffer) {

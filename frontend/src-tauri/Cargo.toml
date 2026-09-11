@@ -17,3 +17,9 @@ tauri-plugin-dialog = "2.7.0"
 tauri-plugin-fs = "2.5.0"
 serde = { version = "1", features = ["derive"] }
 ctrl-backend = { path = "../../backend" }
+
+# For O_NONBLOCK only. Not a serial crate - the platform's own constant, whose
+# value differs between macOS and Linux, so hardcoding it would be a portability
+# bug waiting rather than a saved dependency.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
