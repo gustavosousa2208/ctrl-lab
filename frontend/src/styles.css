@@ -1657,3 +1657,212 @@ button {
 
 
 
+
+/* --- workspace view switch ------------------------------------------------ */
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-views {
+  display: flex;
+  gap: 2px;
+  padding: 4px 6px 0;
+  flex: 0 0 auto;
+}
+
+.app-views button {
+  font: inherit;
+  font-size: 0.74rem;
+  padding: 3px 14px;
+  border: 1px solid #7b8175;
+  border-bottom: none;
+  border-radius: 3px 3px 0 0;
+  background: linear-gradient(180deg, #c8cdbf, #b3b9a8);
+  color: #2a302a;
+  cursor: pointer;
+}
+
+.app-views button.is-active {
+  background: linear-gradient(180deg, #dde0d6, #ccd1c2);
+  font-weight: 700;
+}
+
+.app-view {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* --- the monitor ---------------------------------------------------------- */
+
+.monitor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  padding: 8px 10px 10px;
+}
+
+.monitor__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.monitor__eyebrow {
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  color: #4c5348;
+  margin-right: 4px;
+}
+
+.monitor__field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--ui-field-font-size);
+}
+
+.monitor__bar button,
+.monitor__bar select {
+  font: inherit;
+  font-size: var(--ui-field-font-size);
+  padding: 2px 8px;
+  border: 1px solid #7b8175;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #d3d8ca, #bec4b3);
+  color: #22281f;
+}
+
+.monitor__bar button:disabled {
+  color: #7d8379;
+  background: #c2c7b9;
+}
+
+.monitor__lamp {
+  margin-left: auto;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  padding: 2px 10px;
+  border: 1px solid #7b8175;
+  border-radius: 2px;
+  background: #b9bfae;
+  color: #4c5348;
+}
+
+.monitor__lamp--live {
+  background: #2f3a2c;
+  color: #9be08a;
+  border-color: #2a332a;
+}
+
+/* The screen. Dark, because a trace is a light-emitting thing and because the
+   contrast is what makes a fast-moving line readable. */
+.monitor__screen {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 180px;
+  border: 1px solid #4d5349;
+  border-radius: 2px;
+  background:
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.035),
+      rgba(255, 255, 255, 0.035) 1px, transparent 1px, transparent 32px),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.035),
+      rgba(255, 255, 255, 0.035) 1px, transparent 1px, transparent 48px),
+    #171d18;
+  overflow: hidden;
+}
+
+.monitor__screen svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.monitor__hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0 24px;
+  text-align: center;
+  color: #8f9a8b;
+  font-size: 0.74rem;
+}
+
+.monitor__readout {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.monitor__readout dl {
+  display: flex;
+  gap: 18px;
+  margin: 0;
+  font-size: 0.72rem;
+}
+
+.monitor__readout dl div {
+  display: flex;
+  gap: 5px;
+}
+
+.monitor__readout dt {
+  color: #5a6156;
+}
+
+.monitor__readout dd {
+  margin: 0;
+  font-weight: 700;
+  color: #232a22;
+}
+
+.monitor__damaged dd {
+  color: #8a3520;
+}
+
+.monitor__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.72rem;
+}
+
+.monitor__legend li {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #4c5348;
+}
+
+.monitor__legend b {
+  color: #232a22;
+  font-variant-numeric: tabular-nums;
+}
+
+.monitor__swatch {
+  width: 10px;
+  height: 3px;
+  border-radius: 1px;
+  background: #8f9a8b;
+}
+
+.monitor__swatch--t {
+  background: #5a6156;
+}
+
+.monitor__error {
+  margin: 0;
+  font-size: 0.72rem;
+  color: #8a3520;
+}
