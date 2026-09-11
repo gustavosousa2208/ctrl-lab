@@ -7,6 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ctrl_backend::simulate_project_json;
 use serde::Serialize;
 
+mod monitor;
+
 fn repo_root() -> Result<PathBuf, String> {
   let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
   manifest_dir
@@ -98,7 +100,14 @@ pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_fs::init())
-    .invoke_handler(tauri::generate_handler![compile_project_report, simulate_project])
+    .manage(monitor::MonitorState::default())
+    .invoke_handler(tauri::generate_handler![
+      compile_project_report,
+      simulate_project,
+      monitor::monitor_ports,
+      monitor::monitor_start,
+      monitor::monitor_stop
+    ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }
