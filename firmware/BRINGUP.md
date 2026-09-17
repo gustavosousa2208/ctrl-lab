@@ -572,3 +572,73 @@ stage D and beyond: `CONFIG_USE_SEGGER_RTT=y` plus `CONFIG_RTT_CONSOLE=y`. It
 needs no USB stack on the device, survives across resets, and does not lose
 early output. Not yet tried here — it needs the debug probe attached, so it is a
 stage-D task rather than something a build can settle.
+
+## Flashing from WSL on gusta-desktop
+
+Verified 2026-09-17, when the boards moved to the Windows machine and were
+handed to WSL Ubuntu with `usbipd`. The Mac procedure above still stands; this
+is the same job on the other bench, and it differs in three ways that each cost
+time to find.
+
+```powershell
+# Admin PowerShell. --force because usbipd warns USBPcap is installed.
+usbipd bind   --busid 4-4 --force        # ST-Link (Nucleo F767)
+usbipd bind   --busid 4-2 --force        # J-Link  (H743)
+usbipd attach --wsl Ubuntu --busid 4-4
+usbipd attach --wsl Ubuntu --busid 4-2
+```
+
+Name the distro. There are two (`Ubuntu` and `Ubuntu-Services`) and `--wsl`
+alone takes the default. Attaching is all-or-nothing: once a board is in WSL,
+**Windows loses it** — `COM3` disappears and STM32CubeProgrammer stops seeing
+the Nucleo.
+
+**`flash.sh` does not work here.** It passes no `--runner`, so west picks the
+board's first — `stm32cubeprogrammer` — which is installed on the Windows side
+only. Drive west directly:
+
+| board | runner | why |
+| --- | --- | --- |
+| `nucleo_f767zi` | `--runner openocd` | the Zephyr SDK ships one, and `board.cmake` declares it, so nothing extra is needed |
+| `mini_stm32h743` | `--runner jlink` | the board declares only `dfu-util` and `jlink`, and DFU means BOOT0 |
+
+```bash
+cd /mnt/c/Users/gusta/source/ctrl-lab && . firmware/scripts/wsl-env.sh
+"$WEST" flash --runner openocd -d "$CTRL_LAB_BUILD/ctrl/<board>-<variant>" < /dev/null
+"$WEST" flash --runner jlink   -d "$CTRL_LAB_BUILD/ctrl/<board>-<variant>" < /dev/null
+```
+
+**`< /dev/null` is not optional for J-Link.** J-Link Commander reads stdin, and
+a script piped into `wsl -- bash -s` over ssh leaves it an open pipe it waits on
+for ever. Without the redirect, `west flash --runner jlink` sat for ten minutes
+having printed only "Flashing file:".
+
+`/dev/ttyACM0` **survives a target reset here**, which it does not on macOS —
+there the ST-Link VCP re-enumerates under a new name and any open descriptor
+goes stale. So the reset-then-rescan dance the monitor needs on the Mac is
+unnecessary in WSL.
+
+### Telling a dead H743 apart from a dead probe
+
+The "core domain off the debug bus" failure above has a precise signature from
+J-Link, and it is worth matching before reaching for BOOT0:
+
+```
+connect only, no target access   exit 0, "Script processing completed"
+mem32 E000ED00 (a CPUID read)    stalls until killed
+reset-pin connect (RSetType 2)   stalls
+100 kHz clock                    stalls
+```
+
+DAP initialisation *succeeds* and every target access then hangs. Because it is
+independent of clock speed and reset type, and because the F767's ST-Link
+flashes fine across the same `usbipd` path, neither the probe nor USB-over-IP
+is implicated. Recovery is the physical one: hold BOOT0, power-cycle, keep it
+held about a second, release.
+
+One measurement warning, since both of these produced wrong conclusions here:
+`$?` after a pipeline is the *last* command's status, so `cmd | tail; echo $?`
+reports `0` for a command `timeout` killed — capture it with
+`cmd > log 2>&1; rc=$?`. And piping a long remote command through `tail` buffers
+everything, so a backgrounded job's output file stays empty and looks like a
+hang carrying no information.
