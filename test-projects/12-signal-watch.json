@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "kind": "ctrl-lab-project",
+  "generatedAt": "2026-09-17T00:00:00.000Z",
+  "title": "signal-watch",
+  "simulation": {
+    "endTime": 20.0,
+    "stepSize": 0.05
+  },
+  "nodes": [
+    {
+      "id": "input-1",
+      "type": "input",
+      "label": "input-1",
+      "role": "input-01",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "properties": {
+        "channel": "0",
+        "default": "0.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "scope-2",
+      "type": "scope",
+      "label": "scope-2",
+      "role": "scope-01",
+      "position": {
+        "x": 144,
+        "y": 0
+      },
+      "properties": {
+        "channel": "CH-1",
+        "timebase": "1 s/div",
+        "dataType": "f32"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "sourceNodeId": "input-1",
+      "sourcePortId": "out",
+      "targetNodeId": "scope-2",
+      "targetPortId": "in"
+    }
+  ],
+  "graphIndex": {
+    "nodesById": {
+      "input-1": {
+        "type": "input",
+        "role": "input-01",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "scope-2": {
+        "type": "scope",
+        "role": "scope-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": []
+      }
+    },
+    "incomingEdgesByNodeId": {
+      "input-1": [],
+      "scope-2": [
+        "e1"
+      ]
+    },
+    "outgoingEdgesByNodeId": {
+      "input-1": [
+        "e1"
+      ],
+      "scope-2": []
+    }
+  }
+}

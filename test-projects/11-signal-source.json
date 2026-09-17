@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "kind": "ctrl-lab-project",
+  "generatedAt": "2026-09-17T00:00:00.000Z",
+  "title": "signal-source",
+  "simulation": {
+    "endTime": 20.0,
+    "stepSize": 0.05
+  },
+  "nodes": [
+    {
+      "id": "square-1",
+      "type": "squareWave",
+      "label": "square-1",
+      "role": "square-01",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "properties": {
+        "amplitude": "1.0",
+        "frequency": "0.1",
+        "duty": "50",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "output-2",
+      "type": "output",
+      "label": "output-2",
+      "role": "output-01",
+      "position": {
+        "x": 144,
+        "y": 0
+      },
+      "properties": {
+        "channel": "0",
+        "dataType": "f32"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "sourceNodeId": "square-1",
+      "sourcePortId": "out",
+      "targetNodeId": "output-2",
+      "targetPortId": "in"
+    }
+  ],
+  "graphIndex": {
+    "nodesById": {
+      "square-1": {
+        "type": "squareWave",
+        "role": "square-01",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "output-2": {
+        "type": "output",
+        "role": "output-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": []
+      }
+    },
+    "incomingEdgesByNodeId": {
+      "square-1": [],
+      "output-2": [
+        "e1"
+      ]
+    },
+    "outgoingEdgesByNodeId": {
+      "square-1": [
+        "e1"
+      ],
+      "output-2": []
+    }
+  }
+}

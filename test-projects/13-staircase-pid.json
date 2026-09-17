@@ -1,0 +1,490 @@
+{
+  "version": 1,
+  "kind": "ctrl-lab-project",
+  "generatedAt": "2026-09-17T00:00:00.000Z",
+  "title": "staircase-pid-controller",
+  "simulation": {
+    "endTime": 20.0,
+    "stepSize": 0.05
+  },
+  "nodes": [
+    {
+      "id": "const",
+      "type": "constant",
+      "label": "const",
+      "role": "const-01",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "properties": {
+        "value": "1.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "step-a",
+      "type": "step",
+      "label": "step-a",
+      "role": "step-a",
+      "position": {
+        "x": 0,
+        "y": 60
+      },
+      "properties": {
+        "initialValue": "0.0",
+        "finalValue": "1.0",
+        "stepTime": "4.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "step-b",
+      "type": "step",
+      "label": "step-b",
+      "role": "step-b",
+      "position": {
+        "x": 0,
+        "y": 120
+      },
+      "properties": {
+        "initialValue": "0.0",
+        "finalValue": "1.0",
+        "stepTime": "8.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "step-c",
+      "type": "step",
+      "label": "step-c",
+      "role": "step-c",
+      "position": {
+        "x": 0,
+        "y": 180
+      },
+      "properties": {
+        "initialValue": "0.0",
+        "finalValue": "-1.0",
+        "stepTime": "12.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "step-d",
+      "type": "step",
+      "label": "step-d",
+      "role": "step-d",
+      "position": {
+        "x": 0,
+        "y": 240
+      },
+      "properties": {
+        "initialValue": "0.0",
+        "finalValue": "-1.0",
+        "stepTime": "16.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "sum-a",
+      "type": "sum",
+      "label": "sum-a",
+      "role": "ssum-a",
+      "position": {
+        "x": 150,
+        "y": 0
+      },
+      "properties": {
+        "equation": "+ +",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "sum-b",
+      "type": "sum",
+      "label": "sum-b",
+      "role": "ssum-b",
+      "position": {
+        "x": 270,
+        "y": 0
+      },
+      "properties": {
+        "equation": "+ +",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "sum-c",
+      "type": "sum",
+      "label": "sum-c",
+      "role": "ssum-c",
+      "position": {
+        "x": 390,
+        "y": 0
+      },
+      "properties": {
+        "equation": "+ +",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "sum-d",
+      "type": "sum",
+      "label": "sum-d",
+      "role": "ssum-d",
+      "position": {
+        "x": 510,
+        "y": 0
+      },
+      "properties": {
+        "equation": "+ +",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "input-y",
+      "type": "input",
+      "label": "input-y",
+      "role": "input-01",
+      "position": {
+        "x": 640,
+        "y": 120
+      },
+      "properties": {
+        "channel": "0",
+        "default": "0.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "sum-e",
+      "type": "sum",
+      "label": "sum-e",
+      "role": "sum-e",
+      "position": {
+        "x": 780,
+        "y": 60
+      },
+      "properties": {
+        "equation": "+ -",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "pid",
+      "type": "transferFunction",
+      "label": "pid",
+      "role": "pid-01",
+      "position": {
+        "x": 920,
+        "y": 60
+      },
+      "properties": {
+        "numerator": "1.4 -1.4 0.1",
+        "denominator": "1 -1 0",
+        "domain": "discrete",
+        "discreteVariable": "z",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "output-u",
+      "type": "output",
+      "label": "output-u",
+      "role": "output-01",
+      "position": {
+        "x": 1060,
+        "y": 60
+      },
+      "properties": {
+        "channel": "0",
+        "dataType": "f32"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-c",
+      "sourceNodeId": "const",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-a",
+      "targetPortId": "a"
+    },
+    {
+      "id": "e-sa",
+      "sourceNodeId": "step-a",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-a",
+      "targetPortId": "b"
+    },
+    {
+      "id": "e-sb",
+      "sourceNodeId": "step-b",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-b",
+      "targetPortId": "b"
+    },
+    {
+      "id": "e-chainb",
+      "sourceNodeId": "sum-a",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-b",
+      "targetPortId": "a"
+    },
+    {
+      "id": "e-sc",
+      "sourceNodeId": "step-c",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-c",
+      "targetPortId": "b"
+    },
+    {
+      "id": "e-chainc",
+      "sourceNodeId": "sum-b",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-c",
+      "targetPortId": "a"
+    },
+    {
+      "id": "e-sd",
+      "sourceNodeId": "step-d",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-d",
+      "targetPortId": "b"
+    },
+    {
+      "id": "e-chaind",
+      "sourceNodeId": "sum-c",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-d",
+      "targetPortId": "a"
+    },
+    {
+      "id": "e-r",
+      "sourceNodeId": "sum-d",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-e",
+      "targetPortId": "a"
+    },
+    {
+      "id": "e-y",
+      "sourceNodeId": "input-y",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-e",
+      "targetPortId": "b"
+    },
+    {
+      "id": "e-pid",
+      "sourceNodeId": "sum-e",
+      "sourcePortId": "out",
+      "targetNodeId": "pid",
+      "targetPortId": "in"
+    },
+    {
+      "id": "e-u",
+      "sourceNodeId": "pid",
+      "sourcePortId": "out",
+      "targetNodeId": "output-u",
+      "targetPortId": "in"
+    }
+  ],
+  "graphIndex": {
+    "nodesById": {
+      "const": {
+        "type": "constant",
+        "role": "const-01",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "step-a": {
+        "type": "step",
+        "role": "step-a",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "step-b": {
+        "type": "step",
+        "role": "step-b",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "step-c": {
+        "type": "step",
+        "role": "step-c",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "step-d": {
+        "type": "step",
+        "role": "step-d",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "sum-a": {
+        "type": "sum",
+        "role": "ssum-a",
+        "inputPortIds": [
+          "a",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "sum-b": {
+        "type": "sum",
+        "role": "ssum-b",
+        "inputPortIds": [
+          "a",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "sum-c": {
+        "type": "sum",
+        "role": "ssum-c",
+        "inputPortIds": [
+          "a",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "sum-d": {
+        "type": "sum",
+        "role": "ssum-d",
+        "inputPortIds": [
+          "a",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "input-y": {
+        "type": "input",
+        "role": "input-01",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "sum-e": {
+        "type": "sum",
+        "role": "sum-e",
+        "inputPortIds": [
+          "a",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "pid": {
+        "type": "transferFunction",
+        "role": "pid-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "output-u": {
+        "type": "output",
+        "role": "output-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": []
+      }
+    },
+    "incomingEdgesByNodeId": {
+      "const": [],
+      "step-a": [],
+      "step-b": [],
+      "step-c": [],
+      "step-d": [],
+      "sum-a": [
+        "e-c",
+        "e-sa"
+      ],
+      "sum-b": [
+        "e-sb",
+        "e-chainb"
+      ],
+      "sum-c": [
+        "e-sc",
+        "e-chainc"
+      ],
+      "sum-d": [
+        "e-sd",
+        "e-chaind"
+      ],
+      "input-y": [],
+      "sum-e": [
+        "e-r",
+        "e-y"
+      ],
+      "pid": [
+        "e-pid"
+      ],
+      "output-u": [
+        "e-u"
+      ]
+    },
+    "outgoingEdgesByNodeId": {
+      "const": [
+        "e-c"
+      ],
+      "step-a": [
+        "e-sa"
+      ],
+      "step-b": [
+        "e-sb"
+      ],
+      "step-c": [
+        "e-sc"
+      ],
+      "step-d": [
+        "e-sd"
+      ],
+      "sum-a": [
+        "e-chainb"
+      ],
+      "sum-b": [
+        "e-chainc"
+      ],
+      "sum-c": [
+        "e-chaind"
+      ],
+      "sum-d": [
+        "e-r"
+      ],
+      "input-y": [
+        "e-y"
+      ],
+      "sum-e": [
+        "e-pid"
+      ],
+      "pid": [
+        "e-u"
+      ],
+      "output-u": []
+    }
+  }
+}

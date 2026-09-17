@@ -1,0 +1,507 @@
+{
+  "version": 1,
+  "kind": "ctrl-lab-project",
+  "generatedAt": "2026-09-17T00:00:00.000Z",
+  "title": "staircase-pid-reference",
+  "simulation": {
+    "endTime": 20.0,
+    "stepSize": 0.05
+  },
+  "nodes": [
+    {
+      "id": "rconst",
+      "type": "constant",
+      "label": "rconst",
+      "role": "const-01",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "properties": {
+        "value": "1.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "rstep-a",
+      "type": "step",
+      "label": "rstep-a",
+      "role": "step-a",
+      "position": {
+        "x": 0,
+        "y": 60
+      },
+      "properties": {
+        "initialValue": "0.0",
+        "finalValue": "1.0",
+        "stepTime": "4.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "rstep-b",
+      "type": "step",
+      "label": "rstep-b",
+      "role": "step-b",
+      "position": {
+        "x": 0,
+        "y": 120
+      },
+      "properties": {
+        "initialValue": "0.0",
+        "finalValue": "1.0",
+        "stepTime": "8.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "rstep-c",
+      "type": "step",
+      "label": "rstep-c",
+      "role": "step-c",
+      "position": {
+        "x": 0,
+        "y": 180
+      },
+      "properties": {
+        "initialValue": "0.0",
+        "finalValue": "-1.0",
+        "stepTime": "12.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "rstep-d",
+      "type": "step",
+      "label": "rstep-d",
+      "role": "step-d",
+      "position": {
+        "x": 0,
+        "y": 240
+      },
+      "properties": {
+        "initialValue": "0.0",
+        "finalValue": "-1.0",
+        "stepTime": "16.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "rsum-a",
+      "type": "sum",
+      "label": "rsum-a",
+      "role": "ssum-a",
+      "position": {
+        "x": 150,
+        "y": 0
+      },
+      "properties": {
+        "equation": "+ +",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "rsum-b",
+      "type": "sum",
+      "label": "rsum-b",
+      "role": "ssum-b",
+      "position": {
+        "x": 270,
+        "y": 0
+      },
+      "properties": {
+        "equation": "+ +",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "rsum-c",
+      "type": "sum",
+      "label": "rsum-c",
+      "role": "ssum-c",
+      "position": {
+        "x": 390,
+        "y": 0
+      },
+      "properties": {
+        "equation": "+ +",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "rsum-d",
+      "type": "sum",
+      "label": "rsum-d",
+      "role": "ssum-d",
+      "position": {
+        "x": 510,
+        "y": 0
+      },
+      "properties": {
+        "equation": "+ +",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "delay-y",
+      "type": "delay",
+      "label": "delay-y",
+      "role": "delay-y",
+      "position": {
+        "x": 640,
+        "y": 120
+      },
+      "properties": {
+        "delayTime": "0.05",
+        "initialValue": "0.0",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "sum-e",
+      "type": "sum",
+      "label": "sum-e",
+      "role": "sum-e",
+      "position": {
+        "x": 780,
+        "y": 60
+      },
+      "properties": {
+        "equation": "+ -",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "pid",
+      "type": "transferFunction",
+      "label": "pid",
+      "role": "pid-01",
+      "position": {
+        "x": 920,
+        "y": 60
+      },
+      "properties": {
+        "numerator": "1.4 -1.4 0.1",
+        "denominator": "1 -1 0",
+        "domain": "discrete",
+        "discreteVariable": "z",
+        "dataType": "f32"
+      }
+    },
+    {
+      "id": "plant",
+      "type": "transferFunction",
+      "label": "plant",
+      "role": "plant-01",
+      "position": {
+        "x": 1060,
+        "y": 60
+      },
+      "properties": {
+        "numerator": "1",
+        "denominator": "1 1",
+        "stateName": "y",
+        "dataType": "f32"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "re-c",
+      "sourceNodeId": "rconst",
+      "sourcePortId": "out",
+      "targetNodeId": "rsum-a",
+      "targetPortId": "a"
+    },
+    {
+      "id": "re-sa",
+      "sourceNodeId": "rstep-a",
+      "sourcePortId": "out",
+      "targetNodeId": "rsum-a",
+      "targetPortId": "b"
+    },
+    {
+      "id": "re-sb",
+      "sourceNodeId": "rstep-b",
+      "sourcePortId": "out",
+      "targetNodeId": "rsum-b",
+      "targetPortId": "b"
+    },
+    {
+      "id": "re-chainb",
+      "sourceNodeId": "rsum-a",
+      "sourcePortId": "out",
+      "targetNodeId": "rsum-b",
+      "targetPortId": "a"
+    },
+    {
+      "id": "re-sc",
+      "sourceNodeId": "rstep-c",
+      "sourcePortId": "out",
+      "targetNodeId": "rsum-c",
+      "targetPortId": "b"
+    },
+    {
+      "id": "re-chainc",
+      "sourceNodeId": "rsum-b",
+      "sourcePortId": "out",
+      "targetNodeId": "rsum-c",
+      "targetPortId": "a"
+    },
+    {
+      "id": "re-sd",
+      "sourceNodeId": "rstep-d",
+      "sourcePortId": "out",
+      "targetNodeId": "rsum-d",
+      "targetPortId": "b"
+    },
+    {
+      "id": "re-chaind",
+      "sourceNodeId": "rsum-c",
+      "sourcePortId": "out",
+      "targetNodeId": "rsum-d",
+      "targetPortId": "a"
+    },
+    {
+      "id": "e-r",
+      "sourceNodeId": "rsum-d",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-e",
+      "targetPortId": "a"
+    },
+    {
+      "id": "e-y",
+      "sourceNodeId": "delay-y",
+      "sourcePortId": "out",
+      "targetNodeId": "sum-e",
+      "targetPortId": "b"
+    },
+    {
+      "id": "e-pid",
+      "sourceNodeId": "sum-e",
+      "sourcePortId": "out",
+      "targetNodeId": "pid",
+      "targetPortId": "in"
+    },
+    {
+      "id": "e-p",
+      "sourceNodeId": "pid",
+      "sourcePortId": "out",
+      "targetNodeId": "plant",
+      "targetPortId": "in"
+    },
+    {
+      "id": "e-fb",
+      "sourceNodeId": "plant",
+      "sourcePortId": "out",
+      "targetNodeId": "delay-y",
+      "targetPortId": "in"
+    }
+  ],
+  "graphIndex": {
+    "nodesById": {
+      "rconst": {
+        "type": "constant",
+        "role": "const-01",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "rstep-a": {
+        "type": "step",
+        "role": "step-a",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "rstep-b": {
+        "type": "step",
+        "role": "step-b",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "rstep-c": {
+        "type": "step",
+        "role": "step-c",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "rstep-d": {
+        "type": "step",
+        "role": "step-d",
+        "inputPortIds": [],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "rsum-a": {
+        "type": "sum",
+        "role": "ssum-a",
+        "inputPortIds": [
+          "a",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "rsum-b": {
+        "type": "sum",
+        "role": "ssum-b",
+        "inputPortIds": [
+          "a",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "rsum-c": {
+        "type": "sum",
+        "role": "ssum-c",
+        "inputPortIds": [
+          "a",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "rsum-d": {
+        "type": "sum",
+        "role": "ssum-d",
+        "inputPortIds": [
+          "a",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "delay-y": {
+        "type": "delay",
+        "role": "delay-y",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "sum-e": {
+        "type": "sum",
+        "role": "sum-e",
+        "inputPortIds": [
+          "a",
+          "b"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "pid": {
+        "type": "transferFunction",
+        "role": "pid-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      },
+      "plant": {
+        "type": "transferFunction",
+        "role": "plant-01",
+        "inputPortIds": [
+          "in"
+        ],
+        "outputPortIds": [
+          "out"
+        ]
+      }
+    },
+    "incomingEdgesByNodeId": {
+      "rconst": [],
+      "rstep-a": [],
+      "rstep-b": [],
+      "rstep-c": [],
+      "rstep-d": [],
+      "rsum-a": [
+        "re-c",
+        "re-sa"
+      ],
+      "rsum-b": [
+        "re-sb",
+        "re-chainb"
+      ],
+      "rsum-c": [
+        "re-sc",
+        "re-chainc"
+      ],
+      "rsum-d": [
+        "re-sd",
+        "re-chaind"
+      ],
+      "delay-y": [
+        "e-fb"
+      ],
+      "sum-e": [
+        "e-r",
+        "e-y"
+      ],
+      "pid": [
+        "e-pid"
+      ],
+      "plant": [
+        "e-p"
+      ]
+    },
+    "outgoingEdgesByNodeId": {
+      "rconst": [
+        "re-c"
+      ],
+      "rstep-a": [
+        "re-sa"
+      ],
+      "rstep-b": [
+        "re-sb"
+      ],
+      "rstep-c": [
+        "re-sc"
+      ],
+      "rstep-d": [
+        "re-sd"
+      ],
+      "rsum-a": [
+        "re-chainb"
+      ],
+      "rsum-b": [
+        "re-chainc"
+      ],
+      "rsum-c": [
+        "re-chaind"
+      ],
+      "rsum-d": [
+        "e-r"
+      ],
+      "delay-y": [
+        "e-y"
+      ],
+      "sum-e": [
+        "e-pid"
+      ],
+      "pid": [
+        "e-p"
+      ],
+      "plant": [
+        "e-fb"
+      ]
+    }
+  }
+}
