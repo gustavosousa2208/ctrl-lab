@@ -22,11 +22,16 @@ cd "$(dirname "$0")"
 
 CC="${CC:-cc}"
 
+# -lm because kernels.c calls fmodf. macOS resolves the math functions out of
+# libSystem without being asked; glibc does not, so every one of these linked
+# fine here and failed on Linux with `undefined reference to fmodf`. It is a
+# no-op on macOS, which is why the omission survived this long.
+
 $CC -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter \
     -ffp-contract=off -fno-fast-math \
     -I../src \
     -o ctrl-host \
     main.c ctrl_io_host.c \
-    ../src/dcp.c ../src/kernels.c ../src/runtime.c ../src/trace.c
+    ../src/dcp.c ../src/kernels.c ../src/runtime.c ../src/trace.c -lm
 
 echo "built $(pwd)/ctrl-host"
